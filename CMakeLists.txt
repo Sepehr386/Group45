@@ -10,6 +10,7 @@ link_directories(${MINGW_PATH}/lib)
 add_executable(14041016
         Hw8_Q3_404102245.cpp
         myheader.h
+        main.cpp
 )
 
 target_link_libraries(14041016
