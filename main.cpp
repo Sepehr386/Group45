@@ -1,7 +1,4 @@
-// ============================================
-//  Minimal Scratch Simulator - SDL2
-//  Features: Block Palette, Workspace, Stage, Drag & Drop
-// ============================================
+
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
@@ -12,9 +9,7 @@
 #include <algorithm>
 using namespace std;
 
-// ============================================
-//  Constants
-// ============================================
+
 static const int WIN_W = 1100;
 static const int WIN_H = 700;
 static const int PALETTE_H = 130;
@@ -30,9 +25,7 @@ static SDL_Renderer* gRenderer = nullptr;
 static TTF_Font*     gFont     = nullptr;
 static bool          gRunning  = true;
 
-// ============================================
-//  Category
-// ============================================
+
 enum class Category { MOTION, LOOKS, SOUND, EVENTS, CONTROL, SENSING, OPERATORS, VARIABLES, PEN };
 
 static SDL_Color catColor(Category c) {
@@ -64,12 +57,7 @@ static const char* catName(Category c) {
         default:                  return "?";
     }
 }
-
-// ============================================
-//  Block
-// ============================================
 enum class BlockShape { COMMAND, HAT, REPORTER, BOOLEAN, CAP };
-
 struct Block {
     int       id;
     Category  cat;
@@ -78,8 +66,8 @@ struct Block {
     float     x, y;
     float     w, h;
     bool      inPalette;
-    int       nextBlockId;   // بلوک بعدی (اسنپ شده)
-    int       parentBlockId; // بلوک والد
+    int       nextBlockId;  
+    int       parentBlockId; 
 };
 
 static int gNextId = 5000;
@@ -87,9 +75,6 @@ static vector<Block> gBlocks;
 static int gDragId = -1;
 static float gDragOffX = 0, gDragOffY = 0;
 
-// ============================================
-//  Shape Drawing Helpers
-// ============================================
 static void fillRoundedRect(SDL_Renderer* r, int x, int y, int w, int h,
                             int rad, Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca)
 {
@@ -97,16 +82,16 @@ static void fillRoundedRect(SDL_Renderer* r, int x, int y, int w, int h,
     if (rad > w/2) rad = w/2;
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
-    // center
+    
     SDL_Rect rc = {x+rad, y, w-2*rad, h};
     SDL_RenderFillRect(r, &rc);
-    // left
+    
     SDL_Rect rl = {x, y+rad, rad, h-2*rad};
     SDL_RenderFillRect(r, &rl);
-    // right
+    
     SDL_Rect rr2 = {x+w-rad, y+rad, rad, h-2*rad};
     SDL_RenderFillRect(r, &rr2);
-    // corners (filled circles)
+    
     int cx[4] = {x+rad, x+w-rad-1, x+rad, x+w-rad-1};
     int cy[4] = {y+rad, y+rad, y+h-rad-1, y+h-rad-1};
     for (int c = 0; c < 4; c++) {
@@ -127,9 +112,6 @@ static void fillEllipse(SDL_Renderer* r, int cx, int cy, int rx, int ry,
     }
 }
 
-// ============================================
-//  Text Drawing
-// ============================================
 static void drawText(SDL_Renderer* rnd, int x, int y, const char* text,
                      Uint8 r, Uint8 g, Uint8 b)
 {
@@ -151,9 +133,6 @@ static int textWidth(const char* text) {
     return w;
 }
 
-// ============================================
-//  Build Palette Blocks
-// ============================================
 static void buildPalette() {
     gBlocks.clear();
     struct Def { Category cat; BlockShape shape; const char* text; };
@@ -196,17 +175,15 @@ static void buildPalette() {
         {Category::PEN,       BlockShape::COMMAND,  "erase all"},
     };
     int count = sizeof(defs)/sizeof(defs[0]);
-
-    // چینش افقی در پالت - بر اساس کتگوری گروه‌بندی
     float px = 10, py = 8;
     Category lastCat = (Category)-1;
     for (int i = 0; i < count; i++) {
         if (defs[i].cat != lastCat) {
-            if (lastCat != (Category)-1) { px += 18; } // فاصله بین کتگوری‌ها
+            if (lastCat != (Category)-1) { px += 18; }
             lastCat = defs[i].cat;
         }
         int tw = max((int)(textWidth(defs[i].text) + 24), BLOCK_W);
-        // اگه از عرض پالت رد شد، برو خط بعد
+        
         if (px + tw > WIN_W - STAGE_W - 20) {
             px = 10;
             py += BLOCK_H + 6;
@@ -227,17 +204,11 @@ static void buildPalette() {
     gNextId = count + 100;
 }
 
-// ============================================
-//  Find Block
-// ============================================
 static Block* findBlock(int id) {
     for (auto& b : gBlocks) if (b.id == id) return &b;
     return nullptr;
 }
 
-// ============================================
-//  Clone block from palette
-// ============================================
 static Block cloneBlock(const Block& src, float x, float y) {
     Block b = src;
     b.id = gNextId++;
@@ -248,9 +219,6 @@ static Block cloneBlock(const Block& src, float x, float y) {
     return b;
 }
 
-// ============================================
-//  Snap: connect blocks vertically
-// ============================================
 static void trySnap(Block& dropped) {
     if (dropped.shape == BlockShape::REPORTER || dropped.shape == BlockShape::BOOLEAN)
         return;
@@ -263,7 +231,7 @@ static void trySnap(Block& dropped) {
         if (dx < SNAP_DIST && dy < SNAP_DIST) {
             dropped.x = other.x;
             dropped.y = other.y + other.h - 2;
-            // اتصال زنجیره
+            
             if (other.nextBlockId < 0) {
                 other.nextBlockId = dropped.id;
                 dropped.parentBlockId = other.id;
@@ -284,9 +252,6 @@ static void trySnap(Block& dropped) {
     }
 }
 
-// ============================================
-//  Detach block from chain
-// ============================================
 static void detachBlock(Block& b) {
     if (b.parentBlockId >= 0) {
         Block* parent = findBlock(b.parentBlockId);
@@ -295,16 +260,13 @@ static void detachBlock(Block& b) {
         }
         b.parentBlockId = -1;
     }
-    // همچنین بلوک بعدی رو جدا کن
+    
     if (b.nextBlockId >= 0) {
         Block* child = findBlock(b.nextBlockId);
         if (child) child->parentBlockId = -1;
     }
 }
 
-// ============================================
-//  Draw single block
-// ============================================
 static void drawBlock(SDL_Renderer* rnd, Block& b, bool highlight) {
     SDL_Color col = catColor(b.cat);
     Uint8 cr = col.r, cg = col.g, cb2 = col.b;
@@ -319,10 +281,10 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, bool highlight) {
     case BlockShape::COMMAND:
     case BlockShape::CAP:
         fillRoundedRect(rnd, bx, by, bw, bh, BLOCK_R, cr, cg, cb2, 255);
-        // notch بالا
+        
         { SDL_SetRenderDrawColor(rnd,cr,cg,cb2,255);
           SDL_Rect n={bx+15, by-3, 24, 3}; SDL_RenderFillRect(rnd,&n); }
-        // notch پایین (فقط COMMAND)
+        
         if (b.shape != BlockShape::CAP) {
             SDL_Rect n2={bx+15, by+bh, 24, 3};
             SDL_SetRenderDrawColor(rnd,cr,cg,cb2,255);
@@ -340,7 +302,7 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, bool highlight) {
         fillRoundedRect(rnd, bx, by, bw, bh, bh/2, cr, cg, cb2, 255);
         break;
     case BlockShape::BOOLEAN: {
-        // شکل لوزی‌شکل
+        
         int mx = bx + bw/2, my = by + bh/2;
         int hw = bw/2, hh = bh/2;
         SDL_SetRenderDrawColor(rnd, cr, cg, cb2, 255);
@@ -352,43 +314,41 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, bool highlight) {
         break;
     }
     }
-    // متن بلوک
+    
     int tx = bx + 10, ty = by + (bh - 14) / 2;
     if (b.shape == BlockShape::BOOLEAN) tx = bx + bw/4;
     drawText(rnd, tx, ty, b.text.c_str(), 255, 255, 255);
 }
 
-// ============================================
-//  Draw Stage
-// ============================================
+
 static void drawStage(SDL_Renderer* rnd) {
     int sx = WIN_W - STAGE_W - 10;
     int sy = PALETTE_H + 10;
-    // border
+    
     SDL_SetRenderDrawColor(rnd, 180, 180, 180, 255);
     SDL_Rect border = {sx-2, sy-2, STAGE_W+4, STAGE_H+4};
     SDL_RenderFillRect(rnd, &border);
-    // white stage
+    
     SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
     SDL_Rect stage = {sx, sy, STAGE_W, STAGE_H};
     SDL_RenderFillRect(rnd, &stage);
-    // label
+    
     drawText(rnd, sx+4, sy+4, "Stage", 100, 100, 100);
-    // simple cat icon
+    
     int catX = sx + STAGE_W/2, catY = sy + STAGE_H/2;
     SDL_SetRenderDrawColor(rnd, 230, 150, 50, 255);
     fillEllipse(rnd, catX, catY, 20, 25, 230, 150, 50, 255);
     fillEllipse(rnd, catX, catY-30, 14, 14, 230, 150, 50, 255);
-    // ears
+    
     SDL_SetRenderDrawColor(rnd, 230, 150, 50, 255);
     fillEllipse(rnd, catX-10, catY-42, 5, 8, 230, 150, 50, 255);
     fillEllipse(rnd, catX+10, catY-42, 5, 8, 230, 150, 50, 255);
-    // eyes
+    
     fillEllipse(rnd, catX-5, catY-32, 3, 3, 255, 255, 255, 255);
     fillEllipse(rnd, catX+5, catY-32, 3, 3, 255, 255, 255, 255);
     fillEllipse(rnd, catX-5, catY-32, 1, 1, 0, 0, 0, 255);
     fillEllipse(rnd, catX+5, catY-32, 1, 1, 0, 0, 0, 255);
-    // green flag + stop
+    
     int flagX = sx, flagY = sy - 28;
     fillRoundedRect(rnd, flagX, flagY, 30, 24, 4, 40, 180, 40, 255);
     drawText(rnd, flagX+6, flagY+3, "▶", 255, 255, 255);
@@ -396,9 +356,7 @@ static void drawStage(SDL_Renderer* rnd) {
     drawText(rnd, flagX+44, flagY+3, "■", 255, 255, 255);
 }
 
-// ============================================
-//  Draw Palette background
-// ============================================
+
 static void drawPaletteBackground(SDL_Renderer* rnd) {
     SDL_SetRenderDrawColor(rnd, 235, 235, 235, 255);
     SDL_Rect r = {0, 0, WIN_W - STAGE_W - 20, PALETTE_H};
@@ -408,14 +366,11 @@ static void drawPaletteBackground(SDL_Renderer* rnd) {
     SDL_RenderDrawLine(rnd, 0, PALETTE_H, WIN_W - STAGE_W - 20, PALETTE_H);
 }
 
-// ============================================
-//  Draw Workspace background
-// ============================================
 static void drawWorkspaceBackground(SDL_Renderer* rnd) {
     SDL_SetRenderDrawColor(rnd, 245, 245, 245, 255);
     SDL_Rect r = {0, PALETTE_H+1, WIN_W - STAGE_W - 20, WIN_H - PALETTE_H - 1};
     SDL_RenderFillRect(rnd, &r);
-    // grid dots for visual
+    
     SDL_SetRenderDrawColor(rnd, 220, 220, 220, 255);
     for (int gx = 20; gx < WIN_W - STAGE_W - 20; gx += 30) {
         for (int gy = PALETTE_H + 20; gy < WIN_H; gy += 30) {
@@ -425,9 +380,7 @@ static void drawWorkspaceBackground(SDL_Renderer* rnd) {
     drawText(rnd, 10, PALETTE_H + 6, "Workspace", 180, 180, 180);
 }
 
-// ============================================
-//  Main
-// ============================================
+
 int main(int argc, char* argv[]) {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL Init failed: %s\n", SDL_GetError());
@@ -444,7 +397,6 @@ int main(int argc, char* argv[]) {
     gRenderer = SDL_CreateRenderer(gWindow, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
-    // فونت - مسیر فونت رو تنظیم کنید
     gFont = TTF_OpenFont("font.ttf", 13);
     if (!gFont) gFont = TTF_OpenFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13);
     if (!gFont) gFont = TTF_OpenFont("C:\\Windows\\Fonts\\arial.ttf", 13);
@@ -465,19 +417,19 @@ int main(int argc, char* argv[]) {
             case SDL_MOUSEBUTTONDOWN: {
                 if (ev.button.button != SDL_BUTTON_LEFT) break;
                 int mx = ev.button.x, my = ev.button.y;
-                // بلوک‌ها رو از آخر بررسی کن (بالاترین لایه)
+                
                 for (int i = (int)gBlocks.size()-1; i >= 0; i--) {
                     Block& b = gBlocks[i];
                     if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) {
                         if (b.inPalette) {
-                            // کلون از پالت
+                            
                             Block nb = cloneBlock(b, (float)mx - b.w/2, (float)my - b.h/2);
                             gBlocks.push_back(nb);
                             gDragId = nb.id;
                             gDragOffX = b.w/2;
                             gDragOffY = b.h/2;
                         } else {
-                            // برداشتن بلوک از ورک‌اسپیس
+                            
                             detachBlock(b);
                             gDragId = b.id;
                             gDragOffX = mx - b.x;
@@ -495,7 +447,7 @@ int main(int argc, char* argv[]) {
                 if (db) {
                     db->x = ev.motion.x - gDragOffX;
                     db->y = ev.motion.y - gDragOffY;
-                    // بلوک‌های متصل رو هم بکش
+                   
                     float cy = db->y + db->h - 2;
                     int nid = db->nextBlockId;
                     while (nid >= 0) {
@@ -515,9 +467,9 @@ int main(int argc, char* argv[]) {
                 if (gDragId < 0) break;
                 Block* db = findBlock(gDragId);
                 if (db) {
-                    // اگه داخل پالت ول شد، حذفش کن
+                    
                     if (db->y < PALETTE_H && !db->inPalette) {
-                        // حذف بلوک
+                        
                         for (auto it = gBlocks.begin(); it != gBlocks.end(); ++it) {
                             if (it->id == gDragId) {
                                 gBlocks.erase(it);
@@ -525,7 +477,7 @@ int main(int argc, char* argv[]) {
                             }
                         }
                     } else if (!db->inPalette) {
-                        // اسنپ
+                        
                         trySnap(*db);
                     }
                 }
@@ -539,7 +491,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // ============ Render ============
+        
         SDL_SetRenderDrawColor(gRenderer, 250, 250, 250, 255);
         SDL_RenderClear(gRenderer);
 
@@ -547,24 +499,24 @@ int main(int argc, char* argv[]) {
         drawWorkspaceBackground(gRenderer);
         drawStage(gRenderer);
 
-        // بلوک‌های پالت رو اول بکش
+       
         for (auto& b : gBlocks) {
             if (b.inPalette && b.id != gDragId) {
                 drawBlock(gRenderer, b, false);
             }
         }
-        // بلوک‌های ورک‌اسپیس
+        
         for (auto& b : gBlocks) {
             if (!b.inPalette && b.id != gDragId) {
                 drawBlock(gRenderer, b, false);
             }
         }
-        // بلوک درحال درگ (روی همه)
+        
         if (gDragId >= 0) {
             Block* db = findBlock(gDragId);
             if (db) {
                 drawBlock(gRenderer, *db, true);
-                // بلوک‌های متصل
+                
                 int nid = db->nextBlockId;
                 while (nid >= 0) {
                     Block* nb = findBlock(nid);
@@ -579,7 +531,7 @@ int main(int argc, char* argv[]) {
         SDL_Delay(16);
     }
 
-    // Cleanup
+    
     if (gFont) TTF_CloseFont(gFont);
     TTF_Quit();
     SDL_DestroyRenderer(gRenderer);
