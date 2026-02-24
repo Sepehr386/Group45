@@ -1,541 +1,965 @@
-
-
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
-#include <vector>
-#include <string>
-#include <cmath>
-#include <cstdio>
-#include <algorithm>
+#include <bits/stdc++.h>
 using namespace std;
 
+static const int BASE_WIDTH = 1280;
+static const int BASE_HEIGHT = 720;
+static const float BASE_BLOCK_WIDTH = 200.0f;
+static const float BASE_BLOCK_HEIGHT = 50.0f;
+static const float BASE_CBLOCK_MIN_H = 90.0f;
+static const float BASE_CBLOCK_MOUTH_H = 40.0f;
+static const float BASE_CBLOCK_BAR_H = 20.0f;
+static const float BASE_BLOCK_CORNER_R = 8.0f;
+static const int BASE_TOOLBAR_HEIGHT = 45;
+static const int BASE_PALETTE_WIDTH = 360;
+static const int BASE_CAT_BTN_HEIGHT = 40;
+static const int BASE_CAT_BTN_WIDTH = 120;
+static const int BASE_CAT_PANEL_WIDTH = 130;
+static const int BASE_STAGE_WIDTH = 360;
+static const int BASE_STAGE_HEIGHT = 270;
+static const int BASE_SPRITE_THUMB = 70;
 
-static const int WIN_W = 1100;
-static const int WIN_H = 700;
-static const int PALETTE_H = 130;
-static const int STAGE_W = 320;
-static const int STAGE_H = 240;
-static const int BLOCK_W = 160;
-static const int BLOCK_H = 36;
-static const int BLOCK_R = 6;
-static const int SNAP_DIST = 25;
+static TTF_Font* gFontSmall = nullptr;
+static TTF_Font* gFontNormal = nullptr;
+static TTF_Font* gFontLarge = nullptr;
+static int gFontSizeNormal = 13;
+static string gFontPath = "DejaVuSans.ttf";
+static SDL_Renderer* rnd = nullptr;
 
-static SDL_Window*   gWindow   = nullptr;
-static SDL_Renderer* gRenderer = nullptr;
-static TTF_Font*     gFont     = nullptr;
-static bool          gRunning  = true;
+struct LayoutScale {
+    float sx, sy, s;
+    int winW, winH;
+    int TOOLBAR_HEIGHT;
+    int PALETTE_WIDTH;
+    int CAT_PANEL_WIDTH;
+    int CAT_BTN_HEIGHT;
+    int CAT_BTN_WIDTH;
+    int STAGE_WIDTH;
+    int STAGE_HEIGHT;
+    int SPRITE_THUMB;
+    float BLOCK_WIDTH;
+    float BLOCK_HEIGHT;
+    float CBLOCK_MIN_H;
+    float CBLOCK_MOUTH_H;
+    float CBLOCK_BAR_H;
+    float BLOCK_CORNER_R;
+    int fontScale;
 
+    void update(int w, int h) {
+        winW = w; winH = h;
+        sx = (float)w / BASE_WIDTH;
+        sy = (float)h / BASE_HEIGHT;
+        s = min(sx, sy);
+        if (s < 1.0f) s = 1.0f;
+        TOOLBAR_HEIGHT = (int)(BASE_TOOLBAR_HEIGHT * sy);
+        PALETTE_WIDTH = (int)(BASE_PALETTE_WIDTH * sx);
+        CAT_PANEL_WIDTH = (int)(BASE_CAT_PANEL_WIDTH * sx);
+        CAT_BTN_HEIGHT = (int)(BASE_CAT_BTN_HEIGHT * sy);
+        CAT_BTN_WIDTH = (int)(BASE_CAT_BTN_WIDTH * sx);
+        STAGE_WIDTH = (int)(BASE_STAGE_WIDTH * sx);
+        STAGE_HEIGHT = (int)(BASE_STAGE_HEIGHT * sy);
+        SPRITE_THUMB = (int)(BASE_SPRITE_THUMB * s);
+        float fontFactor = gFontSizeNormal / 13.0f;
+        BLOCK_WIDTH = BASE_BLOCK_WIDTH * s * fontFactor;
+        BLOCK_HEIGHT = BASE_BLOCK_HEIGHT * s * fontFactor;
+        CBLOCK_MIN_H = BASE_CBLOCK_MIN_H * s * fontFactor;
+        CBLOCK_MOUTH_H = BASE_CBLOCK_MOUTH_H * s * fontFactor;
+        CBLOCK_BAR_H = BASE_CBLOCK_BAR_H * s * fontFactor;
+        BLOCK_CORNER_R = BASE_BLOCK_CORNER_R * s;
+        fontScale = max(1, (int)(s * 1.0f));
+    }
+} L;
 
-enum class Category { MOTION, LOOKS, SOUND, EVENTS, CONTROL, SENSING, OPERATORS, VARIABLES, PEN };
+enum Category { MOTION, LOOKS, SOUND, EVENTS, CONTROL, SENSING, OPERATORS, VARIABLES, PEN };
+static const int NUM_CATEGORIES = 9;
 
 static SDL_Color catColor(Category c) {
     switch (c) {
-        case Category::MOTION:    return {66,133,244,255};
-        case Category::LOOKS:     return {147,70,211,255};
-        case Category::SOUND:     return {207,99,207,255};
-        case Category::EVENTS:    return {230,168,34,255};
-        case Category::CONTROL:   return {230,168,34,255};
-        case Category::SENSING:   return {92,177,214,255};
-        case Category::OPERATORS: return {89,192,89,255};
-        case Category::VARIABLES: return {255,140,26,255};
-        case Category::PEN:       return {14,154,108,255};
-        default:                  return {128,128,128,255};
+        case MOTION:    return {100,160,240,255};
+        case LOOKS:     return {180,100,220,255};
+        case SOUND:     return {220,100,170,255};
+        case EVENTS:    return {230,180,0,255};
+        case CONTROL:   return {230,160,0,255};
+        case SENSING:   return {80,180,220,255};
+        case OPERATORS: return {80,200,80,255};
+        case VARIABLES: return {230,120,0,255};
+        case PEN:       return {0,180,120,255};
     }
+    return {128,128,128,255};
 }
 
 static const char* catName(Category c) {
     switch (c) {
-        case Category::MOTION:    return "Motion";
-        case Category::LOOKS:     return "Looks";
-        case Category::SOUND:     return "Sound";
-        case Category::EVENTS:    return "Events";
-        case Category::CONTROL:   return "Control";
-        case Category::SENSING:   return "Sensing";
-        case Category::OPERATORS: return "Operators";
-        case Category::VARIABLES: return "Variables";
-        case Category::PEN:       return "Pen";
-        default:                  return "?";
+        case MOTION:    return "Motion";
+        case LOOKS:     return "Looks";
+        case SOUND:     return "Sound";
+        case EVENTS:    return "Events";
+        case CONTROL:   return "Control";
+        case SENSING:   return "Sensing";
+        case OPERATORS: return "Operators";
+        case VARIABLES: return "Variables";
+        case PEN:       return "Pen";
     }
+    return "?";
 }
-enum class BlockShape { COMMAND, HAT, REPORTER, BOOLEAN, CAP };
-struct Block {
-    int       id;
-    Category  cat;
-    BlockShape shape;
-    string    text;
-    float     x, y;
-    float     w, h;
-    bool      inPalette;
-    int       nextBlockId;  
-    int       parentBlockId; 
+
+enum BlockShape { COMMAND, C_BLOCK, HAT, CAP, REPORTER, BOOLEAN };
+
+struct InputField {
+    string value;
+    float relX, relY;
+    float width, height;
+    bool editing;
+    string defaultVal;
 };
 
-static int gNextId = 5000;
-static vector<Block> gBlocks;
-static int gDragId = -1;
-static float gDragOffX = 0, gDragOffY = 0;
+struct OperatorSlot {
+    float relX, relY;
+    float width, height;
+    int embeddedBlockId;
+};
 
-static void fillRoundedRect(SDL_Renderer* r, int x, int y, int w, int h,
-                            int rad, Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca)
-{
-    if (rad > h/2) rad = h/2;
-    if (rad > w/2) rad = w/2;
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+struct Block {
+    int id;
+    Category cat;
+    BlockShape shape;
+    string text;
+    float x, y;
+    float w, h;
+    bool inPalette;
+    int nextBlockId;
+    int parentBlockId;
+    int childHeadId;
+    int spriteOwner;
+    vector<InputField> inputs;
+    vector<OperatorSlot> opSlots;
+};
+
+struct Sprite {
+    string name;
+    float x, y;
+    float direction;
+    float size;
+    bool visible;
+    bool selected;
+    SDL_Color color;
+    string sayText;
+    float sayTimer;
+};
+
+static vector<Sprite> gSprites;
+static int gSelectedSprite = 0;
+static int gNextSpriteNum = 2;
+static vector<Block> gBlocks;
+static int gNextBlockId = 1000;
+static Category gSelectedCategory = MOTION;
+static bool gIsRunning = false;
+static float gTimer = 0;
+
+static int gDragBlockId = -1;
+static float gDragOffX = 0, gDragOffY = 0;
+static bool gDragging = false;
+
+struct ActiveEdit {
+    int blockId;
+    int fieldIndex;
+    bool active;
+    string buffer;
+    int cursorPos;
+} gEdit = {-1, -1, false, "", 0};
+
+static Sprite createDefaultSprite(const char* name, float x, float y, SDL_Color col) {
+    Sprite sp;
+    sp.name = name;
+    sp.x = x; sp.y = y;
+    sp.direction = 90;
+    sp.size = 100;
+    sp.visible = true;
+    sp.selected = false;
+    sp.color = col;
+    sp.sayText = "";
+    sp.sayTimer = 0;
+    return sp;
+}
+
+static void fillRoundedRect(SDL_Renderer* r, int x, int y, int w, int h, int rad,
+                             Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca) {
     SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
-    
-    SDL_Rect rc = {x+rad, y, w-2*rad, h};
-    SDL_RenderFillRect(r, &rc);
-    
-    SDL_Rect rl = {x, y+rad, rad, h-2*rad};
-    SDL_RenderFillRect(r, &rl);
-    
-    SDL_Rect rr2 = {x+w-rad, y+rad, rad, h-2*rad};
-    SDL_RenderFillRect(r, &rr2);
-    
-    int cx[4] = {x+rad, x+w-rad-1, x+rad, x+w-rad-1};
-    int cy[4] = {y+rad, y+rad, y+h-rad-1, y+h-rad-1};
-    for (int c = 0; c < 4; c++) {
-        for (int dy = -rad; dy <= rad; dy++) {
-            int dx = (int)sqrt((float)(rad*rad - dy*dy));
-            SDL_RenderDrawLine(r, cx[c]-dx, cy[c]+dy, cx[c]+dx, cy[c]+dy);
-        }
+    SDL_Rect center = {x + rad, y, w - 2 * rad, h};
+    SDL_RenderFillRect(r, &center);
+    SDL_Rect left = {x, y + rad, rad, h - 2 * rad};
+    SDL_RenderFillRect(r, &left);
+    SDL_Rect right = {x + w - rad, y + rad, rad, h - 2 * rad};
+    SDL_RenderFillRect(r, &right);
+    for (int cy2 = -rad; cy2 <= rad; cy2++) {
+        int cx2 = (int)sqrt((double)(rad * rad - cy2 * cy2));
+        SDL_RenderDrawLine(r, x + rad - cx2, y + rad + cy2, x + rad, y + rad + cy2);
+        SDL_RenderDrawLine(r, x + w - rad, y + rad + cy2, x + w - rad + cx2, y + rad + cy2);
+        SDL_RenderDrawLine(r, x + rad - cx2, y + h - rad + cy2, x + rad, y + h - rad + cy2);
+        SDL_RenderDrawLine(r, x + w - rad, y + h - rad + cy2, x + w - rad + cx2, y + h - rad + cy2);
     }
 }
 
 static void fillEllipse(SDL_Renderer* r, int cx, int cy, int rx, int ry,
-                         Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca)
-{
+                          Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca) {
     SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
-    for (int dy = -ry; dy <= ry; dy++) {
-        int dx = (int)(rx * sqrt(1.0 - (double)(dy*dy)/(double)(ry*ry)));
-        SDL_RenderDrawLine(r, cx-dx, cy+dy, cx+dx, cy+dy);
+    for (int y2 = -ry; y2 <= ry; y2++) {
+        int x2 = (int)(rx * sqrt(1.0 - (double)(y2 * y2) / (double)(ry * ry)));
+        SDL_RenderDrawLine(r, cx - x2, cy + y2, cx + x2, cy + y2);
     }
 }
 
-static void drawText(SDL_Renderer* rnd, int x, int y, const char* text,
-                     Uint8 r, Uint8 g, Uint8 b)
-{
-    if (!text || !text[0] || !gFont) return;
-    SDL_Color col = {r, g, b, 255};
-    SDL_Surface* surf = TTF_RenderUTF8_Blended(gFont, text, col);
+static int textWidthTTF(const char* txt) {
+    if (!gFontNormal || !txt) return 0;
+    int w = 0, h = 0;
+    TTF_SizeText(gFontNormal, txt, &w, &h);
+    return w;
+}
+
+static int textHeightTTF() {
+    if (!gFontNormal) return 14;
+    return TTF_FontHeight(gFontNormal);
+}
+
+static void drawTextTTF(SDL_Renderer* r, int x, int y, const char* txt,
+                          Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca, TTF_Font* font = nullptr) {
+    if (!txt || strlen(txt) == 0) return;
+    TTF_Font* f = font ? font : gFontNormal;
+    if (!f) return;
+    SDL_Color col = {cr, cg, cb, ca};
+    SDL_Surface* surf = TTF_RenderText_Blended(f, txt, col);
     if (!surf) return;
-    SDL_Texture* tex = SDL_CreateTextureFromSurface(rnd, surf);
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(r, surf);
     SDL_Rect dst = {x, y, surf->w, surf->h};
-    SDL_RenderCopy(rnd, tex, nullptr, &dst);
+    SDL_RenderCopy(r, tex, nullptr, &dst);
     SDL_DestroyTexture(tex);
     SDL_FreeSurface(surf);
 }
 
-static int textWidth(const char* text) {
-    if (!text || !gFont) return 0;
-    int w = 0, h = 0;
-    TTF_SizeUTF8(gFont, text, &w, &h);
-    return w;
+static string intToString(int v) {
+    char buf[32]; snprintf(buf, 32, "%d", v); return string(buf);
 }
 
-static void buildPalette() {
-    gBlocks.clear();
-    struct Def { Category cat; BlockShape shape; const char* text; };
-    Def defs[] = {
-        {Category::MOTION,    BlockShape::COMMAND,  "move 10 steps"},
-        {Category::MOTION,    BlockShape::COMMAND,  "turn R 15 deg"},
-        {Category::MOTION,    BlockShape::COMMAND,  "turn L 15 deg"},
-        {Category::MOTION,    BlockShape::COMMAND,  "go to x:0 y:0"},
-        {Category::MOTION,    BlockShape::COMMAND,  "set x to 0"},
-        {Category::MOTION,    BlockShape::COMMAND,  "set y to 0"},
-        {Category::MOTION,    BlockShape::REPORTER, "x position"},
-        {Category::MOTION,    BlockShape::REPORTER, "y position"},
-        {Category::LOOKS,     BlockShape::COMMAND,  "say Hello!"},
-        {Category::LOOKS,     BlockShape::COMMAND,  "think Hmm..."},
-        {Category::LOOKS,     BlockShape::COMMAND,  "show"},
-        {Category::LOOKS,     BlockShape::COMMAND,  "hide"},
-        {Category::LOOKS,     BlockShape::COMMAND,  "set size 100%"},
-        {Category::LOOKS,     BlockShape::REPORTER, "size"},
-        {Category::SOUND,     BlockShape::COMMAND,  "play sound"},
-        {Category::SOUND,     BlockShape::COMMAND,  "stop sounds"},
-        {Category::EVENTS,    BlockShape::HAT,      "when flag clicked"},
-        {Category::EVENTS,    BlockShape::HAT,      "when key pressed"},
-        {Category::CONTROL,   BlockShape::COMMAND,  "wait 1 secs"},
-        {Category::CONTROL,   BlockShape::COMMAND,  "repeat 10"},
-        {Category::CONTROL,   BlockShape::CAP,      "stop all"},
-        {Category::SENSING,   BlockShape::BOOLEAN,  "touching edge?"},
-        {Category::SENSING,   BlockShape::REPORTER, "mouse x"},
-        {Category::SENSING,   BlockShape::REPORTER, "mouse y"},
-        {Category::OPERATORS, BlockShape::REPORTER, "  +  "},
-        {Category::OPERATORS, BlockShape::REPORTER, "  -  "},
-        {Category::OPERATORS, BlockShape::REPORTER, "  *  "},
-        {Category::OPERATORS, BlockShape::REPORTER, "  /  "},
-        {Category::OPERATORS, BlockShape::BOOLEAN,  "  <  "},
-        {Category::OPERATORS, BlockShape::BOOLEAN,  "  >  "},
-        {Category::VARIABLES, BlockShape::COMMAND,  "set var to 0"},
-        {Category::VARIABLES, BlockShape::COMMAND,  "change var by 1"},
-        {Category::VARIABLES, BlockShape::REPORTER, "my variable"},
-        {Category::PEN,       BlockShape::COMMAND,  "pen down"},
-        {Category::PEN,       BlockShape::COMMAND,  "pen up"},
-        {Category::PEN,       BlockShape::COMMAND,  "erase all"},
-    };
-    int count = sizeof(defs)/sizeof(defs[0]);
-    float px = 10, py = 8;
-    Category lastCat = (Category)-1;
-    for (int i = 0; i < count; i++) {
-        if (defs[i].cat != lastCat) {
-            if (lastCat != (Category)-1) { px += 18; }
-            lastCat = defs[i].cat;
-        }
-        int tw = max((int)(textWidth(defs[i].text) + 24), BLOCK_W);
-        
-        if (px + tw > WIN_W - STAGE_W - 20) {
-            px = 10;
-            py += BLOCK_H + 6;
-        }
-        Block b;
-        b.id = i;
-        b.cat = defs[i].cat;
-        b.shape = defs[i].shape;
-        b.text = defs[i].text;
-        b.x = px; b.y = py;
-        b.w = tw; b.h = BLOCK_H;
-        b.inPalette = true;
-        b.nextBlockId = -1;
-        b.parentBlockId = -1;
-        gBlocks.push_back(b);
-        px += tw + 8;
-    }
-    gNextId = count + 100;
+static string floatToString(float v) {
+    char buf[32]; snprintf(buf, 32, "%.1f", v); return string(buf);
 }
 
-static Block* findBlock(int id) {
-    for (auto& b : gBlocks) if (b.id == id) return &b;
+static InputField makeInput(float rx, float ry, float w, float h, const char* def) {
+    InputField inp;
+    inp.relX = rx; inp.relY = ry;
+    inp.width = w; inp.height = h;
+    inp.value = def; inp.defaultVal = def;
+    inp.editing = false;
+    return inp;
+}
+
+static OperatorSlot makeOpSlot(float rx, float ry, float w, float h) {
+    OperatorSlot sl;
+    sl.relX = rx; sl.relY = ry;
+    sl.width = w; sl.height = h;
+    sl.embeddedBlockId = -1;
+    return sl;
+}
+
+static Block makeBlock(int id, Category cat, BlockShape shape, const char* text,
+                        float x, float y, bool inPalette,
+                        vector<InputField> inputs, vector<OperatorSlot> ops) {
+    Block b;
+    b.id = id;
+    b.cat = cat;
+    b.shape = shape;
+    b.text = text;
+    b.x = x; b.y = y;
+    b.w = L.BLOCK_WIDTH;
+    b.h = (shape == C_BLOCK) ? L.CBLOCK_MIN_H : L.BLOCK_HEIGHT;
+    b.inPalette = inPalette;
+    b.nextBlockId = -1;
+    b.parentBlockId = -1;
+    b.childHeadId = -1;
+    b.spriteOwner = -1;
+    b.inputs = inputs;
+    b.opSlots = ops;
+    return b;
+}
+
+static vector<Block> buildPaletteBlocks() {
+    vector<Block> blocks;
+    int id = 0;
+    float bw = L.BLOCK_WIDTH, bh = L.BLOCK_HEIGHT;
+    float fieldW = bw * 0.18f, fieldH = bh * 0.6f;
+
+    blocks.push_back(makeBlock(id++, MOTION, HAT, "when green flag clicked", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "move  steps", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "10")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "turn right  deg", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "15")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "turn left  deg", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "15")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "go to x:  y:", 0,0,true,
+        {makeInput(bw*0.35f, bh*0.15f, fieldW, fieldH, "0"),
+         makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "0")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "glide  secs to x:  y:", 0,0,true,
+        {makeInput(bw*0.25f, bh*0.15f, fieldW, fieldH, "1"),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "0"),
+         makeInput(bw*0.78f, bh*0.15f, fieldW, fieldH, "0")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "set x to", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "0")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "set y to", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "0")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "change x by", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "10")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "change y by", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "10")}, {}));
+    blocks.push_back(makeBlock(id++, MOTION, COMMAND, "point in direction", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "90")}, {}));
+
+    blocks.push_back(makeBlock(id++, LOOKS, COMMAND, "say  for  secs", 0,0,true,
+        {makeInput(bw*0.2f, bh*0.15f, fieldW*1.5f, fieldH, "Hello!"),
+         makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "2")}, {}));
+    blocks.push_back(makeBlock(id++, LOOKS, COMMAND, "say", 0,0,true,
+        {makeInput(bw*0.3f, bh*0.15f, fieldW*1.5f, fieldH, "Hello!")}, {}));
+    blocks.push_back(makeBlock(id++, LOOKS, COMMAND, "show", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, LOOKS, COMMAND, "hide", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, LOOKS, COMMAND, "set size to  %", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "100")}, {}));
+    blocks.push_back(makeBlock(id++, LOOKS, COMMAND, "change size by", 0,0,true,
+        {makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "10")}, {}));
+
+    blocks.push_back(makeBlock(id++, SOUND, COMMAND, "play sound", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, SOUND, COMMAND, "stop all sounds", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, SOUND, COMMAND, "set volume to  %", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "100")}, {}));
+
+    blocks.push_back(makeBlock(id++, EVENTS, HAT, "when green flag clicked", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, EVENTS, HAT, "when space key pressed", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, EVENTS, HAT, "when this sprite clicked", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, EVENTS, COMMAND, "broadcast", 0,0,true,
+        {makeInput(bw*0.5f, bh*0.15f, fieldW*1.2f, fieldH, "msg1")}, {}));
+
+    blocks.push_back(makeBlock(id++, CONTROL, COMMAND, "wait  secs", 0,0,true,
+        {makeInput(bw*0.5f, bh*0.15f, fieldW, fieldH, "1")}, {}));
+    blocks.push_back(makeBlock(id++, CONTROL, C_BLOCK, "repeat", 0,0,true,
+        {makeInput(bw*0.4f, bh*0.05f, fieldW, fieldH, "10")}, {}));
+    blocks.push_back(makeBlock(id++, CONTROL, C_BLOCK, "forever", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, CONTROL, C_BLOCK, "if  then", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, CONTROL, CAP, "stop all", 0,0,true, {}, {}));
+
+    blocks.push_back(makeBlock(id++, SENSING, REPORTER, "mouse x", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, SENSING, REPORTER, "mouse y", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, SENSING, BOOLEAN, "mouse down?", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, SENSING, BOOLEAN, "key  pressed?", 0,0,true,
+        {makeInput(bw*0.3f, bh*0.15f, fieldW, fieldH, "space")}, {}));
+    blocks.push_back(makeBlock(id++, SENSING, REPORTER, "timer", 0,0,true, {}, {}));
+
+    blocks.push_back(makeBlock(id++, OPERATORS, REPORTER, "  +  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, REPORTER, "  -  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, REPORTER, "  *  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, REPORTER, "  /  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, REPORTER, "pick rand  to ", 0,0,true,
+        {makeInput(bw*0.4f, bh*0.15f, fieldW, fieldH, "1"),
+         makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "10")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, BOOLEAN, "  <  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, BOOLEAN, "  =  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, BOOLEAN, "  >  ", 0,0,true,
+        {makeInput(bw*0.1f, bh*0.15f, fieldW, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, BOOLEAN, " and ", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, BOOLEAN, " or ", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, OPERATORS, BOOLEAN, "not ", 0,0,true, {}, {}));
+
+    blocks.push_back(makeBlock(id++, VARIABLES, REPORTER, "my variable", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, VARIABLES, COMMAND, "set var to ", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "0")}, {}));
+    blocks.push_back(makeBlock(id++, VARIABLES, COMMAND, "change var by ", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "1")}, {}));
+
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "erase all", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "stamp", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "pen down", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "pen up", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "set pen color to", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "#0000FF")}, {}));
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "set pen size to", 0,0,true,
+        {makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "1")}, {}));
+    blocks.push_back(makeBlock(id++, PEN, COMMAND, "change pen size by", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "1")}, {}));
+
+    gNextBlockId = id + 100;
+    return blocks;
+}
+
+static Block* findBlock(vector<Block>& blocks, int id) {
+    for (auto& b : blocks) if (b.id == id) return &b;
     return nullptr;
+}
+
+static float calcCBlockHeight(vector<Block>& blocks, Block& cb) {
+    float barH = L.CBLOCK_BAR_H, mouthH = L.CBLOCK_MOUTH_H;
+    float childrenH = 0;
+    int cid = cb.childHeadId;
+    while (cid >= 0) {
+        Block* child = findBlock(blocks, cid);
+        if (!child) break;
+        childrenH += (child->shape == C_BLOCK) ? calcCBlockHeight(blocks, *child) : child->h;
+        cid = child->nextBlockId;
+    }
+    if (childrenH < mouthH) childrenH = mouthH;
+    return barH + childrenH + barH;
+}
+
+static void updateCBlockChildren(vector<Block>& blocks, Block& cb) {
+    float barH = L.CBLOCK_BAR_H, indent = 20 * L.s;
+    float cy = cb.y + barH;
+    int cid = cb.childHeadId;
+    while (cid >= 0) {
+        Block* child = findBlock(blocks, cid);
+        if (!child) break;
+        child->x = cb.x + indent;
+        child->y = cy;
+        if (child->shape == C_BLOCK) {
+            child->h = calcCBlockHeight(blocks, *child);
+            updateCBlockChildren(blocks, *child);
+        }
+        cy += child->h;
+        cid = child->nextBlockId;
+    }
+    cb.h = calcCBlockHeight(blocks, cb);
 }
 
 static Block cloneBlock(const Block& src, float x, float y) {
     Block b = src;
-    b.id = gNextId++;
+    b.id = gNextBlockId++;
     b.x = x; b.y = y;
     b.inPalette = false;
     b.nextBlockId = -1;
     b.parentBlockId = -1;
+    b.childHeadId = -1;
+    b.spriteOwner = gSelectedSprite;
+    for (auto& inp : b.inputs) inp.editing = false;
+    for (auto& sl : b.opSlots) sl.embeddedBlockId = -1;
     return b;
 }
 
-static void trySnap(Block& dropped) {
-    if (dropped.shape == BlockShape::REPORTER || dropped.shape == BlockShape::BOOLEAN)
-        return;
-    for (auto& other : gBlocks) {
-        if (other.id == dropped.id || other.inPalette) continue;
-        if (other.shape == BlockShape::REPORTER || other.shape == BlockShape::BOOLEAN) continue;
-        // اسنپ به زیر بلوک دیگه
-        float dx = fabs(dropped.x - other.x);
-        float dy = fabs(dropped.y - (other.y + other.h));
-        if (dx < SNAP_DIST && dy < SNAP_DIST) {
-            dropped.x = other.x;
-            dropped.y = other.y + other.h - 2;
-            
-            if (other.nextBlockId < 0) {
-                other.nextBlockId = dropped.id;
-                dropped.parentBlockId = other.id;
-            }
-            return;
-        }
-        // اسنپ بالای بلوک دیگه
-        float dy2 = fabs((dropped.y + dropped.h) - other.y);
-        if (dx < SNAP_DIST && dy2 < SNAP_DIST) {
-            dropped.x = other.x;
-            dropped.y = other.y - dropped.h + 2;
-            if (dropped.nextBlockId < 0) {
-                dropped.nextBlockId = other.id;
-                other.parentBlockId = dropped.id;
-            }
-            return;
-        }
-    }
-}
-
-static void detachBlock(Block& b) {
-    if (b.parentBlockId >= 0) {
-        Block* parent = findBlock(b.parentBlockId);
-        if (parent && parent->nextBlockId == b.id) {
-            parent->nextBlockId = -1;
-        }
-        b.parentBlockId = -1;
-    }
-    
-    if (b.nextBlockId >= 0) {
-        Block* child = findBlock(b.nextBlockId);
-        if (child) child->parentBlockId = -1;
-    }
-}
-
-static void drawBlock(SDL_Renderer* rnd, Block& b, bool highlight) {
+static void drawBlock(SDL_Renderer* r, Block& b, vector<Block>& allBlocks, bool highlight = false) {
     SDL_Color col = catColor(b.cat);
     Uint8 cr = col.r, cg = col.g, cb2 = col.b;
-    if (highlight) {
-        cr = min(255, cr+50);
-        cg = min(255, cg+50);
-        cb2 = min(255, cb2+50);
-    }
-    int bx=(int)b.x, by=(int)b.y, bw=(int)b.w, bh=(int)b.h;
+    if (highlight) { cr = min(255, cr + 40); cg = min(255, cg + 40); cb2 = min(255, cb2 + 40); }
+    int bx = (int)b.x, by = (int)b.y, bw = (int)b.w, bh = (int)b.h, rd = (int)L.BLOCK_CORNER_R;
 
     switch (b.shape) {
-    case BlockShape::COMMAND:
-    case BlockShape::CAP:
-        fillRoundedRect(rnd, bx, by, bw, bh, BLOCK_R, cr, cg, cb2, 255);
-        
-        { SDL_SetRenderDrawColor(rnd,cr,cg,cb2,255);
-          SDL_Rect n={bx+15, by-3, 24, 3}; SDL_RenderFillRect(rnd,&n); }
-        
-        if (b.shape != BlockShape::CAP) {
-            SDL_Rect n2={bx+15, by+bh, 24, 3};
-            SDL_SetRenderDrawColor(rnd,cr,cg,cb2,255);
-            SDL_RenderFillRect(rnd,&n2);
+    case COMMAND:
+    case CAP:
+        fillRoundedRect(r, bx, by, bw, bh, rd, cr, cg, cb2, 255);
+        { SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+          SDL_Rect notch = {bx + (int)(20*L.s), by - (int)(4*L.s), (int)(30*L.s), (int)(4*L.s)};
+          SDL_RenderFillRect(r, &notch); }
+        if (b.shape != CAP) {
+            SDL_Rect notchB = {bx + (int)(20*L.s), by + bh, (int)(30*L.s), (int)(4*L.s)};
+            SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+            SDL_RenderFillRect(r, &notchB);
         }
         break;
-    case BlockShape::HAT:
-        fillRoundedRect(rnd, bx, by+8, bw, bh-8, BLOCK_R, cr, cg, cb2, 255);
-        fillEllipse(rnd, bx+bw/2, by+8, bw/2, 10, cr, cg, cb2, 255);
-        { SDL_Rect n2={bx+15, by+bh, 24, 3};
-          SDL_SetRenderDrawColor(rnd,cr,cg,cb2,255);
-          SDL_RenderFillRect(rnd,&n2); }
+    case HAT:
+        fillRoundedRect(r, bx, by + (int)(10*L.s), bw, bh - (int)(10*L.s), rd, cr, cg, cb2, 255);
+        fillEllipse(r, bx + bw/2, by + (int)(10*L.s), bw/2, (int)(12*L.s), cr, cg, cb2, 255);
+        { SDL_Rect notchB = {bx + (int)(20*L.s), by + bh, (int)(30*L.s), (int)(4*L.s)};
+          SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+          SDL_RenderFillRect(r, &notchB); }
         break;
-    case BlockShape::REPORTER:
-        fillRoundedRect(rnd, bx, by, bw, bh, bh/2, cr, cg, cb2, 255);
+    case C_BLOCK: {
+        float barH = L.CBLOCK_BAR_H, indent = 20 * L.s;
+        fillRoundedRect(r, bx, by, bw, (int)barH, rd, cr, cg, cb2, 255);
+        { SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+          SDL_Rect notch = {bx + (int)(20*L.s), by - (int)(4*L.s), (int)(30*L.s), (int)(4*L.s)};
+          SDL_RenderFillRect(r, &notch); }
+        float mouthTop = by + barH;
+        float mouthBot = by + b.h - barH;
+        SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+        SDL_Rect leftBar = {bx, (int)mouthTop, (int)indent, (int)(mouthBot - mouthTop)};
+        SDL_RenderFillRect(r, &leftBar);
+        { SDL_Rect innerNotch = {bx + (int)indent + (int)(20*L.s), (int)mouthTop, (int)(30*L.s), (int)(4*L.s)};
+          SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+          SDL_RenderFillRect(r, &innerNotch); }
+        fillRoundedRect(r, bx, (int)mouthBot, bw, (int)barH, rd, cr, cg, cb2, 255);
+        { SDL_Rect notchB = {bx + (int)(20*L.s), by + (int)b.h, (int)(30*L.s), (int)(4*L.s)};
+          SDL_SetRenderDrawColor(r, cr, cg, cb2, 255);
+          SDL_RenderFillRect(r, &notchB); }
+        int cid = b.childHeadId;
+        while (cid >= 0) {
+            Block* child = findBlock(allBlocks, cid);
+            if (!child) break;
+            drawBlock(r, *child, allBlocks, false);
+            cid = child->nextBlockId;
+        }
+    } break;
+    case REPORTER:
+        fillRoundedRect(r, bx, by, bw, bh, bh/2, cr, cg, cb2, 255);
         break;
-    case BlockShape::BOOLEAN: {
-        
-        int mx = bx + bw/2, my = by + bh/2;
-        int hw = bw/2, hh = bh/2;
-        SDL_SetRenderDrawColor(rnd, cr, cg, cb2, 255);
-        for (int dy = -hh; dy <= hh; dy++) {
-            float ratio = 1.0f - fabs((float)dy / hh);
-            int dxr = (int)(hw * ratio);
-            SDL_RenderDrawLine(rnd, mx-dxr, my+dy, mx+dxr, my+dy);
+    case BOOLEAN:
+        fillRoundedRect(r, bx, by, bw, bh, bh/2, cr, cg, cb2, 255);
+        { SDL_SetRenderDrawColor(r, 255, 255, 255, 60);
+          int cx = bx + bh/4, cy2 = by + bh/4, sz = bh/2;
+          for (int i = 0; i < sz/2; i++) {
+              SDL_RenderDrawLine(r, cx + i, cy2 + sz/2 - i, cx + i, cy2 + sz/2 + i);
+          }
         }
         break;
     }
+
+    int textX = bx + (int)(8 * L.s);
+    int textY = by + (bh - textHeightTTF()) / 2;
+    if (b.shape == C_BLOCK) textY = by + ((int)L.CBLOCK_BAR_H - textHeightTTF()) / 2;
+    drawTextTTF(r, textX, textY, b.text.c_str(), 255, 255, 255, 255);
+
+    for (auto& inp : b.inputs) {
+        int fx = bx + (int)inp.relX, fy = by + (int)inp.relY;
+        int fw = (int)inp.width, fh = (int)inp.height;
+        fillRoundedRect(r, fx, fy, fw, fh, 4, 255, 255, 255, 220);
+        if (inp.editing) {
+            SDL_SetRenderDrawColor(r, 80, 80, 255, 255);
+            SDL_Rect border = {fx-1, fy-1, fw+2, fh+2};
+            SDL_RenderDrawRect(r, &border);
+        }
+        string display = inp.value.empty() ? inp.defaultVal : inp.value;
+        drawTextTTF(r, fx + 3, fy + (fh - textHeightTTF()) / 2, display.c_str(), 40, 40, 40, 255);
     }
-    
-    int tx = bx + 10, ty = by + (bh - 14) / 2;
-    if (b.shape == BlockShape::BOOLEAN) tx = bx + bw/4;
-    drawText(rnd, tx, ty, b.text.c_str(), 255, 255, 255);
 }
 
+static void drawSpriteOnStage(SDL_Renderer* r, Sprite& sp, int stageX, int stageY,
+                                int stageW, int stageH) {
+    if (!sp.visible) return;
+    float scale = sp.size / 100.0f;
+    int sz = (int)(30 * scale);
+    int sx = stageX + stageW/2 + (int)sp.x - sz/2;
+    int sy = stageY + stageH/2 - (int)sp.y - sz/2;
 
-static void drawStage(SDL_Renderer* rnd) {
-    int sx = WIN_W - STAGE_W - 10;
-    int sy = PALETTE_H + 10;
-    
-    SDL_SetRenderDrawColor(rnd, 180, 180, 180, 255);
-    SDL_Rect border = {sx-2, sy-2, STAGE_W+4, STAGE_H+4};
-    SDL_RenderFillRect(rnd, &border);
-    
-    SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
-    SDL_Rect stage = {sx, sy, STAGE_W, STAGE_H};
-    SDL_RenderFillRect(rnd, &stage);
-    
-    drawText(rnd, sx+4, sy+4, "Stage", 100, 100, 100);
-    
-    int catX = sx + STAGE_W/2, catY = sy + STAGE_H/2;
-    SDL_SetRenderDrawColor(rnd, 230, 150, 50, 255);
-    fillEllipse(rnd, catX, catY, 20, 25, 230, 150, 50, 255);
-    fillEllipse(rnd, catX, catY-30, 14, 14, 230, 150, 50, 255);
-    
-    SDL_SetRenderDrawColor(rnd, 230, 150, 50, 255);
-    fillEllipse(rnd, catX-10, catY-42, 5, 8, 230, 150, 50, 255);
-    fillEllipse(rnd, catX+10, catY-42, 5, 8, 230, 150, 50, 255);
-    
-    fillEllipse(rnd, catX-5, catY-32, 3, 3, 255, 255, 255, 255);
-    fillEllipse(rnd, catX+5, catY-32, 3, 3, 255, 255, 255, 255);
-    fillEllipse(rnd, catX-5, catY-32, 1, 1, 0, 0, 0, 255);
-    fillEllipse(rnd, catX+5, catY-32, 1, 1, 0, 0, 0, 255);
-    
-    int flagX = sx, flagY = sy - 28;
-    fillRoundedRect(rnd, flagX, flagY, 30, 24, 4, 40, 180, 40, 255);
-    drawText(rnd, flagX+6, flagY+3, "▶", 255, 255, 255);
-    fillRoundedRect(rnd, flagX+36, flagY, 30, 24, 4, 200, 50, 50, 255);
-    drawText(rnd, flagX+44, flagY+3, "■", 255, 255, 255);
+    fillRoundedRect(r, sx, sy, sz, sz, sz/4, sp.color.r, sp.color.g, sp.color.b, 255);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 200);
+    int eyeOff = sz / 4;
+    int eyeSz = max(2, sz / 8);
+    SDL_Rect eye1 = {sx + eyeOff, sy + eyeOff, eyeSz, eyeSz};
+    SDL_Rect eye2 = {sx + sz - eyeOff - eyeSz, sy + eyeOff, eyeSz, eyeSz};
+    SDL_RenderFillRect(r, &eye1);
+    SDL_RenderFillRect(r, &eye2);
+
+    if (!sp.sayText.empty() && sp.sayTimer > 0) {
+        int tw = textWidthTTF(sp.sayText.c_str()) + 12;
+        int th = textHeightTTF() + 8;
+        int bx = sx + sz/2 - tw/2;
+        int by2 = sy - th - 8;
+        fillRoundedRect(r, bx, by2, tw, th, 6, 255, 255, 255, 240);
+        SDL_SetRenderDrawColor(r, 100, 100, 100, 255);
+        SDL_Rect border = {bx, by2, tw, th};
+        SDL_RenderDrawRect(r, &border);
+        drawTextTTF(r, bx + 6, by2 + 4, sp.sayText.c_str(), 30, 30, 30, 255);
+    }
+
+    if (sp.selected) {
+        SDL_SetRenderDrawColor(r, 255, 200, 0, 255);
+        SDL_Rect sel = {sx - 2, sy - 2, sz + 4, sz + 4};
+        SDL_RenderDrawRect(r, &sel);
+    }
 }
 
-
-static void drawPaletteBackground(SDL_Renderer* rnd) {
-    SDL_SetRenderDrawColor(rnd, 235, 235, 235, 255);
-    SDL_Rect r = {0, 0, WIN_W - STAGE_W - 20, PALETTE_H};
-    SDL_RenderFillRect(rnd, &r);
-    // separator line
-    SDL_SetRenderDrawColor(rnd, 200, 200, 200, 255);
-    SDL_RenderDrawLine(rnd, 0, PALETTE_H, WIN_W - STAGE_W - 20, PALETTE_H);
-}
-
-static void drawWorkspaceBackground(SDL_Renderer* rnd) {
-    SDL_SetRenderDrawColor(rnd, 245, 245, 245, 255);
-    SDL_Rect r = {0, PALETTE_H+1, WIN_W - STAGE_W - 20, WIN_H - PALETTE_H - 1};
-    SDL_RenderFillRect(rnd, &r);
-    
-    SDL_SetRenderDrawColor(rnd, 220, 220, 220, 255);
-    for (int gx = 20; gx < WIN_W - STAGE_W - 20; gx += 30) {
-        for (int gy = PALETTE_H + 20; gy < WIN_H; gy += 30) {
-            SDL_RenderDrawPoint(rnd, gx, gy);
+static void drawGrid(SDL_Renderer* r, int x, int y, int w, int h) {
+    SDL_SetRenderDrawColor(r, 220, 220, 230, 255);
+    int gap = (int)(20 * L.s);
+    if (gap < 8) gap = 8;
+    for (int gx = x; gx < x + w; gx += gap) {
+        for (int gy = y; gy < y + h; gy += gap) {
+            SDL_RenderDrawPoint(r, gx, gy);
         }
     }
-    drawText(rnd, 10, PALETTE_H + 6, "Workspace", 180, 180, 180);
 }
-
 
 int main(int argc, char* argv[]) {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        fprintf(stderr, "SDL Init failed: %s\n", SDL_GetError());
-        return 1;
-    }
-    if (TTF_Init() < 0) {
-        fprintf(stderr, "TTF Init failed: %s\n", TTF_GetError());
-        return 1;
-    }
+    SDL_Init(SDL_INIT_VIDEO);
+    TTF_Init();
 
-    gWindow = SDL_CreateWindow("Scratch Simulator",
+    SDL_Window* window = SDL_CreateWindow("Scratch Clone",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WIN_W, WIN_H, SDL_WINDOW_SHOWN);
-    gRenderer = SDL_CreateRenderer(gWindow, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        BASE_WIDTH, BASE_HEIGHT,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    rnd = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND);
 
-    gFont = TTF_OpenFont("font.ttf", 13);
-    if (!gFont) gFont = TTF_OpenFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13);
-    if (!gFont) gFont = TTF_OpenFont("C:\\Windows\\Fonts\\arial.ttf", 13);
-    if (!gFont) {
-        fprintf(stderr, "Warning: Could not load font. Text will not render.\n");
+    int winW = BASE_WIDTH, winH = BASE_HEIGHT;
+    L.update(winW, winH);
+
+    gFontSmall = TTF_OpenFont(gFontPath.c_str(), (int)(11 * L.s));
+    gFontNormal = TTF_OpenFont(gFontPath.c_str(), (int)(gFontSizeNormal * L.s));
+    gFontLarge = TTF_OpenFont(gFontPath.c_str(), (int)(18 * L.s));
+
+    if (!gFontNormal) {
+        const char* fallbacks[] = {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                                    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                                    "C:\\Windows\\Fonts\\arial.ttf"};
+        for (auto& fb : fallbacks) {
+            gFontNormal = TTF_OpenFont(fb, (int)(gFontSizeNormal * L.s));
+            if (gFontNormal) {
+                gFontSmall = TTF_OpenFont(fb, (int)(11 * L.s));
+                gFontLarge = TTF_OpenFont(fb, (int)(18 * L.s));
+                gFontPath = fb;
+                break;
+            }
+        }
     }
 
-    buildPalette();
+    gSprites.push_back(createDefaultSprite("Sprite1", 0, 0, {100, 160, 240, 255}));
+    gBlocks = buildPaletteBlocks();
 
-    while (gRunning) {
-        SDL_Event ev;
+    bool running = true;
+    SDL_Event ev;
+    Uint32 lastTick = SDL_GetTicks();
+
+    while (running) {
+        Uint32 now = SDL_GetTicks();
+        float dt = (now - lastTick) / 1000.0f;
+        lastTick = now;
+        gTimer += dt;
+
+        for (auto& sp : gSprites) {
+            if (sp.sayTimer > 0) {
+                sp.sayTimer -= dt;
+                if (sp.sayTimer <= 0) { sp.sayTimer = 0; sp.sayText = ""; }
+            }
+        }
+
         while (SDL_PollEvent(&ev)) {
-            switch (ev.type) {
-            case SDL_QUIT:
-                gRunning = false;
-                break;
+            if (ev.type == SDL_QUIT) running = false;
 
-            case SDL_MOUSEBUTTONDOWN: {
-                if (ev.button.button != SDL_BUTTON_LEFT) break;
-                int mx = ev.button.x, my = ev.button.y;
-                
-                for (int i = (int)gBlocks.size()-1; i >= 0; i--) {
-                    Block& b = gBlocks[i];
-                    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) {
-                        if (b.inPalette) {
-                            
-                            Block nb = cloneBlock(b, (float)mx - b.w/2, (float)my - b.h/2);
-                            gBlocks.push_back(nb);
-                            gDragId = nb.id;
-                            gDragOffX = b.w/2;
-                            gDragOffY = b.h/2;
-                        } else {
-                            
-                            detachBlock(b);
-                            gDragId = b.id;
-                            gDragOffX = mx - b.x;
-                            gDragOffY = my - b.y;
+            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                winW = ev.window.data1;
+                winH = ev.window.data2;
+                L.update(winW, winH);
+            }
+
+            if (ev.type == SDL_KEYDOWN) {
+                if (gEdit.active) {
+                    if (ev.key.keysym.sym == SDLK_RETURN || ev.key.keysym.sym == SDLK_ESCAPE) {
+                        Block* eb = findBlock(gBlocks, gEdit.blockId);
+                        if (eb && gEdit.fieldIndex >= 0 && gEdit.fieldIndex < (int)eb->inputs.size()) {
+                            eb->inputs[gEdit.fieldIndex].value = gEdit.buffer;
+                            eb->inputs[gEdit.fieldIndex].editing = false;
                         }
-                        break;
+                        gEdit.active = false;
+                    } else if (ev.key.keysym.sym == SDLK_BACKSPACE && !gEdit.buffer.empty()) {
+                        gEdit.buffer.pop_back();
+                        gEdit.cursorPos = max(0, gEdit.cursorPos - 1);
+                    }
+                } else {
+                    if (ev.key.keysym.sym == SDLK_LEFT && gSelectedSprite < (int)gSprites.size()) {
+                        gSprites[gSelectedSprite].x -= 10;
+                    }
+                    if (ev.key.keysym.sym == SDLK_RIGHT && gSelectedSprite < (int)gSprites.size()) {
+                        gSprites[gSelectedSprite].x += 10;
+                    }
+                    if (ev.key.keysym.sym == SDLK_UP && gSelectedSprite < (int)gSprites.size()) {
+                        gSprites[gSelectedSprite].y += 10;
+                    }
+                    if (ev.key.keysym.sym == SDLK_DOWN && gSelectedSprite < (int)gSprites.size()) {
+                        gSprites[gSelectedSprite].y -= 10;
                     }
                 }
-                break;
             }
 
-            case SDL_MOUSEMOTION: {
-                if (gDragId < 0) break;
-                Block* db = findBlock(gDragId);
-                if (db) {
-                    db->x = ev.motion.x - gDragOffX;
-                    db->y = ev.motion.y - gDragOffY;
-                   
-                    float cy = db->y + db->h - 2;
-                    int nid = db->nextBlockId;
-                    while (nid >= 0) {
-                        Block* nb = findBlock(nid);
-                        if (!nb) break;
-                        nb->x = db->x;
-                        nb->y = cy;
-                        cy += nb->h - 2;
-                        nid = nb->nextBlockId;
+            if (ev.type == SDL_TEXTINPUT && gEdit.active) {
+                gEdit.buffer += ev.text.text;
+                gEdit.cursorPos += (int)strlen(ev.text.text);
+            }
+
+            if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                int mx = ev.button.x, my = ev.button.y;
+
+                int stageX = winW - L.STAGE_WIDTH;
+                int stageY = L.TOOLBAR_HEIGHT;
+                int sprPanelY = stageY + L.STAGE_HEIGHT + 10;
+                int thumbSz = L.SPRITE_THUMB;
+
+                int addBtnX = stageX + 10 + (int)gSprites.size() * (thumbSz + 8);
+                int addBtnY = sprPanelY + 5;
+                if (mx >= addBtnX && mx <= addBtnX + thumbSz && my >= addBtnY && my <= addBtnY + thumbSz) {
+                    SDL_Color colors[] = {{240,80,80,255},{80,200,80,255},{200,80,200,255},
+                                           {240,180,0,255},{80,180,220,255}};
+                    SDL_Color c = colors[gSprites.size() % 5];
+                    string nm = "Sprite" + intToString(gNextSpriteNum++);
+                    gSprites.push_back(createDefaultSprite(nm.c_str(), (float)(rand()%200-100),
+                                                            (float)(rand()%150-75), c));
+                    gSelectedSprite = (int)gSprites.size() - 1;
+                    continue;
+                }
+
+                for (int i = 0; i < (int)gSprites.size(); i++) {
+                    int tx = stageX + 10 + i * (thumbSz + 8);
+                    int ty = sprPanelY + 5;
+                    if (mx >= tx && mx <= tx + thumbSz && my >= ty && my <= ty + thumbSz) {
+                        int delX = tx + thumbSz - 14, delY = ty + 2;
+                        if (mx >= delX && mx <= delX + 12 && my >= delY && my <= delY + 12 && gSprites.size() > 1) {
+                            gBlocks.erase(remove_if(gBlocks.begin(), gBlocks.end(),
+                                [i](const Block& b) { return !b.inPalette && b.spriteOwner == i; }), gBlocks.end());
+                            gSprites.erase(gSprites.begin() + i);
+                            for (auto& b : gBlocks) {
+                                if (!b.inPalette && b.spriteOwner > i) b.spriteOwner--;
+                            }
+                            if (gSelectedSprite >= (int)gSprites.size()) gSelectedSprite = (int)gSprites.size() - 1;
+                        } else {
+                            gSelectedSprite = i;
+                        }
+                        continue;
                     }
                 }
-                break;
-            }
 
-            case SDL_MOUSEBUTTONUP: {
-                if (ev.button.button != SDL_BUTTON_LEFT) break;
-                if (gDragId < 0) break;
-                Block* db = findBlock(gDragId);
-                if (db) {
-                    
-                    if (db->y < PALETTE_H && !db->inPalette) {
-                        
-                        for (auto it = gBlocks.begin(); it != gBlocks.end(); ++it) {
-                            if (it->id == gDragId) {
-                                gBlocks.erase(it);
+                int catPanelX = 0, catPanelY = L.TOOLBAR_HEIGHT;
+                for (int i = 0; i < NUM_CATEGORIES; i++) {
+                    int cy = catPanelY + i * L.CAT_BTN_HEIGHT;
+                    if (mx >= catPanelX && mx < catPanelX + L.CAT_PANEL_WIDTH &&
+                        my >= cy && my < cy + L.CAT_BTN_HEIGHT) {
+                        gSelectedCategory = (Category)i;
+                    }
+                }
+
+                gDragBlockId = -1;
+                for (int i = (int)gBlocks.size() - 1; i >= 0; i--) {
+                    Block& b = gBlocks[i];
+                    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+                        bool clickedInput = false;
+                        for (int fi = 0; fi < (int)b.inputs.size(); fi++) {
+                            auto& inp = b.inputs[fi];
+                            int fx = (int)(b.x + inp.relX), fy = (int)(b.y + inp.relY);
+                            if (mx >= fx && mx <= fx + (int)inp.width &&
+                                my >= fy && my <= fy + (int)inp.height && !b.inPalette) {
+                                if (gEdit.active) {
+                                    Block* eb = findBlock(gBlocks, gEdit.blockId);
+                                    if (eb && gEdit.fieldIndex >= 0 && gEdit.fieldIndex < (int)eb->inputs.size()) {
+                                        eb->inputs[gEdit.fieldIndex].value = gEdit.buffer;
+                                        eb->inputs[gEdit.fieldIndex].editing = false;
+                                    }
+                                }
+                                gEdit.blockId = b.id;
+                                gEdit.fieldIndex = fi;
+                                gEdit.active = true;
+                                gEdit.buffer = inp.value;
+                                gEdit.cursorPos = (int)inp.value.size();
+                                inp.editing = true;
+                                clickedInput = true;
                                 break;
                             }
                         }
-                    } else if (!db->inPalette) {
-                        
-                        trySnap(*db);
+                        if (clickedInput) break;
+
+                        if (gEdit.active) {
+                            Block* eb = findBlock(gBlocks, gEdit.blockId);
+                            if (eb && gEdit.fieldIndex >= 0 && gEdit.fieldIndex < (int)eb->inputs.size()) {
+                                eb->inputs[gEdit.fieldIndex].value = gEdit.buffer;
+                                eb->inputs[gEdit.fieldIndex].editing = false;
+                            }
+                            gEdit.active = false;
+                        }
+
+                        if (b.inPalette) {
+                            Block nb = cloneBlock(b, (float)mx - b.w/2, (float)my - b.h/2);
+                            gBlocks.push_back(nb);
+                            gDragBlockId = nb.id;
+                            gDragOffX = b.w / 2;
+                            gDragOffY = b.h / 2;
+                        } else {
+                            gDragBlockId = b.id;
+                            gDragOffX = mx - b.x;
+                            gDragOffY = my - b.y;
+                        }
+                        gDragging = true;
+                        break;
                     }
                 }
-                gDragId = -1;
-                break;
             }
 
-            case SDL_KEYDOWN:
-                if (ev.key.keysym.sym == SDLK_ESCAPE) gRunning = false;
-                break;
-            }
-        }
-
-        
-        SDL_SetRenderDrawColor(gRenderer, 250, 250, 250, 255);
-        SDL_RenderClear(gRenderer);
-
-        drawPaletteBackground(gRenderer);
-        drawWorkspaceBackground(gRenderer);
-        drawStage(gRenderer);
-
-       
-        for (auto& b : gBlocks) {
-            if (b.inPalette && b.id != gDragId) {
-                drawBlock(gRenderer, b, false);
-            }
-        }
-        
-        for (auto& b : gBlocks) {
-            if (!b.inPalette && b.id != gDragId) {
-                drawBlock(gRenderer, b, false);
-            }
-        }
-        
-        if (gDragId >= 0) {
-            Block* db = findBlock(gDragId);
-            if (db) {
-                drawBlock(gRenderer, *db, true);
-                
-                int nid = db->nextBlockId;
-                while (nid >= 0) {
-                    Block* nb = findBlock(nid);
-                    if (!nb) break;
-                    drawBlock(gRenderer, *nb, false);
-                    nid = nb->nextBlockId;
+            if (ev.type == SDL_MOUSEMOTION && gDragging && gDragBlockId >= 0) {
+                Block* db = findBlock(gBlocks, gDragBlockId);
+                if (db) {
+                    float nx = ev.motion.x - gDragOffX;
+                    float ny = ev.motion.y - gDragOffY;
+                    db->x = nx; db->y = ny;
                 }
             }
+
+            if (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT && gDragging) {
+                gDragging = false;
+                gDragBlockId = -1;
+            }
         }
 
-        SDL_RenderPresent(gRenderer);
+        SDL_SetRenderDrawColor(rnd, 250, 250, 250, 255);
+        SDL_RenderClear(rnd);
+
+        SDL_SetRenderDrawColor(rnd, 55, 55, 70, 255);
+        SDL_Rect toolbar = {0, 0, winW, L.TOOLBAR_HEIGHT};
+        SDL_RenderFillRect(rnd, &toolbar);
+        drawTextTTF(rnd, 15, (L.TOOLBAR_HEIGHT - textHeightTTF()) / 2,
+                     "Scratch Clone", 255, 255, 255, 255, gFontLarge);
+
+        int flagX = winW - L.STAGE_WIDTH - 80;
+        fillRoundedRect(rnd, flagX, 5, 32, 32, 6, 50, 180, 50, 255);
+        drawTextTTF(rnd, flagX + 8, 8, ">", 255, 255, 255, 255);
+        fillRoundedRect(rnd, flagX + 40, 5, 32, 32, 6, 200, 60, 60, 255);
+        drawTextTTF(rnd, flagX + 48, 8, "X", 255, 255, 255, 255);
+
+        int catPanelX = 0, catPanelY = L.TOOLBAR_HEIGHT;
+        int catPanelH = winH - L.TOOLBAR_HEIGHT;
+        SDL_SetRenderDrawColor(rnd, 42, 42, 56, 255);
+        SDL_Rect catBg = {catPanelX, catPanelY, L.CAT_PANEL_WIDTH, catPanelH};
+        SDL_RenderFillRect(rnd, &catBg);
+
+        for (int i = 0; i < NUM_CATEGORIES; i++) {
+            Category c = (Category)i;
+            SDL_Color cc = catColor(c);
+            int cy = catPanelY + i * L.CAT_BTN_HEIGHT;
+            if (c == gSelectedCategory) {
+                fillRoundedRect(rnd, catPanelX + 4, cy + 2, L.CAT_PANEL_WIDTH - 8,
+                                L.CAT_BTN_HEIGHT - 4, 6, cc.r, cc.g, cc.b, 255);
+                drawTextTTF(rnd, catPanelX + 10, cy + (L.CAT_BTN_HEIGHT - textHeightTTF()) / 2,
+                             catName(c), 255, 255, 255, 255);
+            } else {
+                drawTextTTF(rnd, catPanelX + 10, cy + (L.CAT_BTN_HEIGHT - textHeightTTF()) / 2,
+                             catName(c), 180, 180, 200, 255);
+            }
+        }
+
+        int palX = L.CAT_PANEL_WIDTH;
+        int palY = L.TOOLBAR_HEIGHT;
+        int palW = L.PALETTE_WIDTH - L.CAT_PANEL_WIDTH;
+        int palH = winH - L.TOOLBAR_HEIGHT;
+        SDL_SetRenderDrawColor(rnd, 235, 235, 240, 255);
+        SDL_Rect palBg = {palX, palY, palW, palH};
+        SDL_RenderFillRect(rnd, &palBg);
+
+        float py = (float)(palY + 10);
+        for (auto& b : gBlocks) {
+            if (!b.inPalette) continue;
+            if (b.cat != gSelectedCategory) continue;
+            b.x = (float)(palX + 10);
+            b.y = py;
+            drawBlock(rnd, b, gBlocks, false);
+            py += b.h + 8;
+        }
+
+        int wsX = L.PALETTE_WIDTH;
+        int wsY = L.TOOLBAR_HEIGHT;
+        int wsW = winW - L.PALETTE_WIDTH - L.STAGE_WIDTH;
+        int wsH = winH - L.TOOLBAR_HEIGHT;
+        SDL_SetRenderDrawColor(rnd, 245, 245, 248, 255);
+        SDL_Rect wsBg = {wsX, wsY, wsW, wsH};
+        SDL_RenderFillRect(rnd, &wsBg);
+        drawGrid(rnd, wsX, wsY, wsW, wsH);
+
+        for (auto& b : gBlocks) {
+            if (b.inPalette) continue;
+            if (b.spriteOwner != gSelectedSprite) continue;
+            if (b.id == gDragBlockId) continue;
+            drawBlock(rnd, b, gBlocks, false);
+        }
+
+        if (gDragging && gDragBlockId >= 0) {
+            Block* db = findBlock(gBlocks, gDragBlockId);
+            if (db) {
+                drawBlock(rnd, *db, gBlocks, true);
+            }
+        }
+
+        int stageX = winW - L.STAGE_WIDTH;
+        int stageY = L.TOOLBAR_HEIGHT;
+        SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
+        SDL_Rect stageBg = {stageX, stageY, L.STAGE_WIDTH, L.STAGE_HEIGHT};
+        SDL_RenderFillRect(rnd, &stageBg);
+        SDL_SetRenderDrawColor(rnd, 180, 180, 190, 255);
+        SDL_RenderDrawRect(rnd, &stageBg);
+
+        for (auto& sp : gSprites) {
+            drawSpriteOnStage(rnd, sp, stageX, stageY, L.STAGE_WIDTH, L.STAGE_HEIGHT);
+        }
+
+        int sprPanelY = stageY + L.STAGE_HEIGHT + 10;
+        SDL_SetRenderDrawColor(rnd, 230, 230, 235, 255);
+        SDL_Rect sprPanel = {stageX, sprPanelY, L.STAGE_WIDTH, winH - sprPanelY};
+        SDL_RenderFillRect(rnd, &sprPanel);
+
+        drawTextTTF(rnd, stageX + 5, sprPanelY - (int)(2 * L.s),
+                     "Sprites:", 60, 60, 70, 255, gFontSmall);
+
+        int thumbSz = L.SPRITE_THUMB;
+        for (int i = 0; i < (int)gSprites.size(); i++) {
+            int tx = stageX + 10 + i * (thumbSz + 8);
+            int ty = sprPanelY + 5;
+
+            if (i == gSelectedSprite) {
+                SDL_SetRenderDrawColor(rnd, 70, 130, 240, 255);
+                SDL_Rect sel = {tx - 3, ty - 3, thumbSz + 6, thumbSz + 6};
+                SDL_RenderDrawRect(rnd, &sel);
+                SDL_Rect sel2 = {tx - 2, ty - 2, thumbSz + 4, thumbSz + 4};
+                SDL_RenderDrawRect(rnd, &sel2);
+            }
+
+            fillRoundedRect(rnd, tx, ty, thumbSz, thumbSz, 6,
+                             gSprites[i].color.r, gSprites[i].color.g, gSprites[i].color.b, 200);
+
+            int nameW = textWidthTTF(gSprites[i].name.c_str());
+            drawTextTTF(rnd, tx + (thumbSz - nameW) / 2, ty + thumbSz + 2,
+                         gSprites[i].name.c_str(), 50, 50, 60, 255, gFontSmall);
+
+            if (gSprites.size() > 1) {
+                int delX = tx + thumbSz - 14, delY = ty + 2;
+                fillRoundedRect(rnd, delX, delY, 12, 12, 3, 200, 60, 60, 255);
+                drawTextTTF(rnd, delX + 2, delY - 1, "x", 255, 255, 255, 255, gFontSmall);
+            }
+        }
+
+        int addBtnX = stageX + 10 + (int)gSprites.size() * (thumbSz + 8);
+        int addBtnY = sprPanelY + 5;
+        fillRoundedRect(rnd, addBtnX, addBtnY, thumbSz, thumbSz, 6, 100, 180, 100, 220);
+        int plusW = textWidthTTF("+");
+        drawTextTTF(rnd, addBtnX + (thumbSz - plusW) / 2,
+                     addBtnY + (thumbSz - textHeightTTF()) / 2, "+", 255, 255, 255, 255, gFontLarge);
+
+        if (gSelectedSprite < (int)gSprites.size()) {
+            Sprite& sel = gSprites[gSelectedSprite];
+            int infoY = sprPanelY + thumbSz + 22;
+            string info = sel.name + "  x:" + intToString((int)sel.x)
+                          + " y:" + intToString((int)sel.y)
+                          + " dir:" + intToString((int)sel.direction)
+                          + " size:" + intToString((int)sel.size);
+            drawTextTTF(rnd, stageX + 10, infoY, info.c_str(), 50, 50, 60, 255, gFontSmall);
+        }
+
+        if (gEdit.active) {
+            Block* eb = findBlock(gBlocks, gEdit.blockId);
+            if (eb && gEdit.fieldIndex >= 0 && gEdit.fieldIndex < (int)eb->inputs.size()) {
+                eb->inputs[gEdit.fieldIndex].value = gEdit.buffer;
+            }
+        }
+
+        SDL_RenderPresent(rnd);
         SDL_Delay(16);
     }
 
-    
-    if (gFont) TTF_CloseFont(gFont);
+    if (gFontSmall) TTF_CloseFont(gFontSmall);
+    if (gFontNormal) TTF_CloseFont(gFontNormal);
+    if (gFontLarge) TTF_CloseFont(gFontLarge);
     TTF_Quit();
-    SDL_DestroyRenderer(gRenderer);
-    SDL_DestroyWindow(gWindow);
+    SDL_DestroyRenderer(rnd);
+    SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
 }
