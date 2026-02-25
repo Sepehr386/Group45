@@ -11,6 +11,8 @@ static const float BASE_CBLOCK_MIN_H = 90.0f;
 static const float BASE_CBLOCK_MOUTH_H = 40.0f;
 static const float BASE_CBLOCK_BAR_H = 20.0f;
 static const float BASE_BLOCK_CORNER_R = 8.0f;
+static const float BASE_SNAP_DISTANCE = 55.0f;
+static const float BASE_SNAP_VERT_OVERLAP = 6.0f;
 static const int BASE_TOOLBAR_HEIGHT = 45;
 static const int BASE_PALETTE_WIDTH = 360;
 static const int BASE_CAT_BTN_HEIGHT = 40;
@@ -44,6 +46,8 @@ struct LayoutScale {
     float CBLOCK_MOUTH_H;
     float CBLOCK_BAR_H;
     float BLOCK_CORNER_R;
+    float SNAP_DISTANCE;
+    float SNAP_VERT_OVERLAP;
     int fontScale;
 
     void update(int w, int h) {
@@ -67,6 +71,8 @@ struct LayoutScale {
         CBLOCK_MOUTH_H = BASE_CBLOCK_MOUTH_H * s * fontFactor;
         CBLOCK_BAR_H = BASE_CBLOCK_BAR_H * s * fontFactor;
         BLOCK_CORNER_R = BASE_BLOCK_CORNER_R * s;
+        SNAP_DISTANCE = BASE_SNAP_DISTANCE * s;
+        SNAP_VERT_OVERLAP = BASE_SNAP_VERT_OVERLAP * s;
         fontScale = max(1, (int)(s * 1.0f));
     }
 } L;
@@ -585,6 +591,96 @@ static void drawGrid(SDL_Renderer* r, int x, int y, int w, int h) {
     }
 }
 
+static void snapBlocks(vector<Block>& blocks, Block& dropped) {
+    if (dropped.shape == REPORTER || dropped.shape == BOOLEAN) return;
+    float snapDist = L.SNAP_DISTANCE;
+    int bestId = -1;
+    float bestDist = snapDist;
+    bool snapBelow = true;
+
+    for (auto& other : blocks) {
+        if (other.id == dropped.id || other.inPalette) continue;
+        if (other.spriteOwner != dropped.spriteOwner) continue;
+        if (other.shape == REPORTER || other.shape == BOOLEAN) continue;
+
+        float otherBot = other.y + other.h;
+        float dx = fabs(dropped.x - other.x);
+        float dy = fabs(dropped.y - otherBot);
+        float dist = dx + dy;
+        if (dist < bestDist && other.nextBlockId < 0 && other.shape != CAP) {
+            bestDist = dist;
+            bestId = other.id;
+            snapBelow = true;
+        }
+
+        if (other.shape == C_BLOCK && other.childHeadId < 0) {
+            float indent = 20 * L.s;
+            float mouthY = other.y + L.CBLOCK_BAR_H;
+            dx = fabs(dropped.x - (other.x + indent));
+            dy = fabs(dropped.y - mouthY);
+            dist = dx + dy;
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestId = other.id;
+                snapBelow = false;
+            }
+        }
+    }
+
+    if (bestId >= 0) {
+        Block* target = findBlock(blocks, bestId);
+        if (!target) return;
+        if (snapBelow) {
+            dropped.x = target->x;
+            dropped.y = target->y + target->h - L.SNAP_VERT_OVERLAP;
+            target->nextBlockId = dropped.id;
+            dropped.parentBlockId = target->id;
+        } else {
+            float indent = 20 * L.s;
+            dropped.x = target->x + indent;
+            dropped.y = target->y + L.CBLOCK_BAR_H;
+            target->childHeadId = dropped.id;
+            dropped.parentBlockId = target->id;
+            target->h = calcCBlockHeight(blocks, *target);
+            updateCBlockChildren(blocks, *target);
+        }
+
+        float cx = dropped.x, cy = dropped.y + dropped.h;
+        int nid = dropped.nextBlockId;
+        while (nid >= 0) {
+            Block* nb = findBlock(blocks, nid);
+            if (!nb) break;
+            nb->x = cx;
+            nb->y = cy - L.SNAP_VERT_OVERLAP;
+            cy = nb->y + nb->h;
+            nid = nb->nextBlockId;
+        }
+    }
+}
+
+static void detachBlock(vector<Block>& blocks, Block& b) {
+    if (b.parentBlockId >= 0) {
+        Block* parent = findBlock(blocks, b.parentBlockId);
+        if (parent) {
+            if (parent->nextBlockId == b.id) parent->nextBlockId = -1;
+            if (parent->childHeadId == b.id) {
+                parent->childHeadId = -1;
+                parent->h = calcCBlockHeight(blocks, *parent);
+            }
+        }
+        b.parentBlockId = -1;
+    }
+}
+
+static void deleteBlockChain(vector<Block>& blocks, int blockId) {
+    Block* b = findBlock(blocks, blockId);
+    if (!b) return;
+    if (b->nextBlockId >= 0) deleteBlockChain(blocks, b->nextBlockId);
+    if (b->childHeadId >= 0) deleteBlockChain(blocks, b->childHeadId);
+    blocks.erase(remove_if(blocks.begin(), blocks.end(),
+        [blockId](const Block& bl) { return bl.id == blockId; }), blocks.end());
+}
+
 int main(int argc, char* argv[]) {
     SDL_Init(SDL_INIT_VIDEO);
     TTF_Init();
@@ -673,6 +769,15 @@ int main(int argc, char* argv[]) {
                     }
                     if (ev.key.keysym.sym == SDLK_DOWN && gSelectedSprite < (int)gSprites.size()) {
                         gSprites[gSelectedSprite].y -= 10;
+                    }
+                    if (ev.key.keysym.sym == SDLK_DELETE) {
+                        vector<int> toDelete;
+                        for (auto& b : gBlocks) {
+                            if (!b.inPalette && b.spriteOwner == gSelectedSprite) {
+                                toDelete.push_back(b.id);
+                            }
+                        }
+                        for (int did : toDelete) deleteBlockChain(gBlocks, did);
                     }
                 }
             }
@@ -777,6 +882,7 @@ int main(int argc, char* argv[]) {
                             gDragOffX = b.w / 2;
                             gDragOffY = b.h / 2;
                         } else {
+                            detachBlock(gBlocks, b);
                             gDragBlockId = b.id;
                             gDragOffX = mx - b.x;
                             gDragOffY = my - b.y;
@@ -792,12 +898,28 @@ int main(int argc, char* argv[]) {
                 if (db) {
                     float nx = ev.motion.x - gDragOffX;
                     float ny = ev.motion.y - gDragOffY;
+                    float dx = nx - db->x, dy = ny - db->y;
                     db->x = nx; db->y = ny;
+                    int nid = db->nextBlockId;
+                    while (nid >= 0) {
+                        Block* nb = findBlock(gBlocks, nid);
+                        if (!nb) break;
+                        nb->x += dx; nb->y += dy;
+                        nid = nb->nextBlockId;
+                    }
                 }
             }
 
             if (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT && gDragging) {
                 gDragging = false;
+                Block* db = findBlock(gBlocks, gDragBlockId);
+                if (db) {
+                    if (db->x < L.CAT_PANEL_WIDTH + (L.PALETTE_WIDTH - L.CAT_PANEL_WIDTH)) {
+                        deleteBlockChain(gBlocks, db->id);
+                    } else {
+                        snapBlocks(gBlocks, *db);
+                    }
+                }
                 gDragBlockId = -1;
             }
         }
@@ -868,14 +990,29 @@ int main(int argc, char* argv[]) {
         for (auto& b : gBlocks) {
             if (b.inPalette) continue;
             if (b.spriteOwner != gSelectedSprite) continue;
+            if (b.parentBlockId >= 0) continue;
             if (b.id == gDragBlockId) continue;
             drawBlock(rnd, b, gBlocks, false);
+            int nid = b.nextBlockId;
+            while (nid >= 0) {
+                Block* nb = findBlock(gBlocks, nid);
+                if (!nb) break;
+                drawBlock(rnd, *nb, gBlocks, false);
+                nid = nb->nextBlockId;
+            }
         }
 
         if (gDragging && gDragBlockId >= 0) {
             Block* db = findBlock(gBlocks, gDragBlockId);
             if (db) {
                 drawBlock(rnd, *db, gBlocks, true);
+                int nid = db->nextBlockId;
+                while (nid >= 0) {
+                    Block* nb = findBlock(gBlocks, nid);
+                    if (!nb) break;
+                    drawBlock(rnd, *nb, gBlocks, true);
+                    nid = nb->nextBlockId;
+                }
             }
         }
 
