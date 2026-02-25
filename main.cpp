@@ -1,12 +1,9 @@
-// Scratch-like IDE — Pure SDL2 with Bitmap Font (NO SDL_ttf)
-// FIXED & ENHANCED VERSION
-// Compile:
-//   g++ -std=c++17 -o scratch scratch.cpp $(sdl2-config --cflags --libs) -lm
-
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #include <bits/stdc++.h>
 #include <SDL_image.h>
-
+#include "tinyfiledialogs.h"
+#include <SDL2/SDL2_gfxPrimitives.h>
 using namespace std;
 
 // ════════════════════════════════════════════
@@ -32,6 +29,36 @@ static const int   BASE_CAT_PANEL_WIDTH  = 130;
 static const int   BASE_STAGE_WIDTH      = 360;
 static const int   BASE_STAGE_HEIGHT     = 270;
 static const int   BASE_SPRITE_THUMB     = 70;
+static bool costumeEditMode = false;
+static SDL_Texture* costumeCanvas = nullptr;
+static int canvasW = 480, canvasH = 360;
+static Uint8 penColorR = 0, penColorG = 0, penColorB = 0;
+static int penSize = 3;
+static bool isDrawing = false;
+static int lastDrawX = -1, lastDrawY = -1;
+static int selectedCostumeSpriteIdx = -1;
+static TTF_Font* gFontSmall  = nullptr;
+static TTF_Font* gFontNormal = nullptr;
+static TTF_Font* gFontLarge  = nullptr;
+static int gFontSizeNormal = 13;
+static string gFontPath = "DejaVuSans.ttf";
+static SDL_Texture* gBackdropTexture = nullptr;
+static string gCurrentBackdropName = "default";
+static bool gBackdropEditMode = false;
+static bool gBackdropPanelOpen = false;
+static int  gBackdropPanelTab  = 0;
+
+static const char* gBackdropLibrary[] = {"default", "ocean", "sunset"};
+static int gBackdropLibraryCount = 3;
+struct BackdropItem {
+    const char* name;
+    const char* path;
+};
+static BackdropItem gBackdropItems[] = {
+    {"default",  "backdrops/default.png"},
+    {"ocean",    "backdrops/ocean.png"},
+    {"sunset",   "backdrops/sunset.png"},
+};
 
 // ════════════════════════════════════════════
 //  Scaling system
@@ -73,7 +100,8 @@ struct LayoutScale {
         STAGE_WIDTH      = (int)(BASE_STAGE_WIDTH      * sx);
         STAGE_HEIGHT     = (int)(BASE_STAGE_HEIGHT     * sy);
         SPRITE_THUMB     = (int)(BASE_SPRITE_THUMB     * s);
-        BLOCK_WIDTH      = BASE_BLOCK_WIDTH  * s;
+        float fontFactor = 1.0f + (gFontSizeNormal - 13) * 0.04f;
+        BLOCK_WIDTH = BASE_BLOCK_WIDTH * s * fontFactor;
         BLOCK_HEIGHT     = BASE_BLOCK_HEIGHT * s;
         CBLOCK_MIN_H     = BASE_CBLOCK_MIN_H * s;
         CBLOCK_MOUTH_H   = BASE_CBLOCK_MOUTH_H * s;
@@ -89,172 +117,88 @@ struct LayoutScale {
 static LayoutScale L;
 
 // ════════════════════════════════════════════
-//  Bitmap Font 5x7
+//  TTF Font System
 // ════════════════════════════════════════════
-static const int GLYPH_W = 5;
-static const int GLYPH_H = 7;
-static const int FONT_FIRST_CHAR = 32;
-static const int FONT_LAST_CHAR  = 126;
+static bool loadBackdrop(SDL_Renderer* rnd, const char* path) {
+    SDL_Surface* surf = IMG_Load(path);
+    if (!surf) return false;
+    // aspect ratio fit
+    int winW = L.winW, winH = L.winH - L.TOOLBAR_HEIGHT;
+    float scaleX = (float)winW / surf->w;
+    float scaleY = (float)winH / surf->h;
+    float scale  = (scaleX < scaleY) ? scaleX : scaleY;
+    int dstW = (int)(surf->w * scale);
+    int dstH = (int)(surf->h * scale);
+    SDL_Surface* scaled = SDL_CreateRGBSurface(0, dstW, dstH, 32,
+        0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+    SDL_BlitScaled(surf, nullptr, scaled, nullptr);
+    if (gBackdropTexture) SDL_DestroyTexture(gBackdropTexture);
+    gBackdropTexture = SDL_CreateTextureFromSurface(rnd, scaled);
+    SDL_FreeSurface(scaled);
+    SDL_FreeSurface(surf);
+    return gBackdropTexture != nullptr;
+}
 
-static const unsigned char FONT_5x7[][7] = {
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // 32 ' '
-    {0x04,0x04,0x04,0x04,0x00,0x04,0x00}, // 33 '!'
-    {0x0A,0x0A,0x00,0x00,0x00,0x00,0x00}, // 34 '"'
-    {0x0A,0x1F,0x0A,0x1F,0x0A,0x00,0x00}, // 35 '#'
-    {0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04}, // 36 '$'
-    {0x18,0x19,0x02,0x04,0x08,0x13,0x03}, // 37 '%'
-    {0x08,0x14,0x14,0x08,0x15,0x12,0x0D}, // 38 '&'
-    {0x04,0x04,0x00,0x00,0x00,0x00,0x00}, // 39 '\''
-    {0x02,0x04,0x08,0x08,0x08,0x04,0x02}, // 40 '('
-    {0x08,0x04,0x02,0x02,0x02,0x04,0x08}, // 41 ')'
-    {0x00,0x04,0x15,0x0E,0x15,0x04,0x00}, // 42 '*'
-    {0x00,0x04,0x04,0x1F,0x04,0x04,0x00}, // 43 '+'
-    {0x00,0x00,0x00,0x00,0x04,0x04,0x08}, // 44 ','
-    {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, // 45 '-'
-    {0x00,0x00,0x00,0x00,0x00,0x04,0x00}, // 46 '.'
-    {0x01,0x01,0x02,0x04,0x08,0x10,0x10}, // 47 '/'
-    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, // 48 '0'
-    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 49 '1'
-    {0x0E,0x11,0x01,0x06,0x08,0x10,0x1F}, // 50 '2'
-    {0x0E,0x11,0x01,0x06,0x01,0x11,0x0E}, // 51 '3'
-    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 52 '4'
-    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, // 53 '5'
-    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, // 54 '6'
-    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 55 '7'
-    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, // 56 '8'
-    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, // 57 '9'
-    {0x00,0x04,0x00,0x00,0x04,0x00,0x00}, // 58 ':'
-    {0x00,0x04,0x00,0x00,0x04,0x04,0x08}, // 59 ';'
-    {0x02,0x04,0x08,0x10,0x08,0x04,0x02}, // 60 '<'
-    {0x00,0x00,0x1F,0x00,0x1F,0x00,0x00}, // 61 '='
-    {0x08,0x04,0x02,0x01,0x02,0x04,0x08}, // 62 '>'
-    {0x0E,0x11,0x01,0x02,0x04,0x00,0x04}, // 63 '?'
-    {0x0E,0x11,0x17,0x15,0x17,0x10,0x0E}, // 64 '@'
-    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, // 65 'A'
-    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, // 66 'B'
-    {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}, // 67 'C'
-    {0x1C,0x12,0x11,0x11,0x11,0x12,0x1C}, // 68 'D'
-    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, // 69 'E'
-    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, // 70 'F'
-    {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, // 71 'G'
-    {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, // 72 'H'
-    {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, // 73 'I'
-    {0x07,0x02,0x02,0x02,0x02,0x12,0x0C}, // 74 'J'
-    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, // 75 'K'
-    {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, // 76 'L'
-    {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, // 77 'M'
-    {0x11,0x19,0x15,0x13,0x11,0x11,0x11}, // 78 'N'
-    {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, // 79 'O'
-    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, // 80 'P'
-    {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}, // 81 'Q'
-    {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, // 82 'R'
-    {0x0E,0x11,0x10,0x0E,0x01,0x11,0x0E}, // 83 'S'
-    {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, // 84 'T'
-    {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, // 85 'U'
-    {0x11,0x11,0x11,0x11,0x0A,0x0A,0x04}, // 86 'V'
-    {0x11,0x11,0x11,0x15,0x15,0x1B,0x11}, // 87 'W'
-    {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, // 88 'X'
-    {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}, // 89 'Y'
-    {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}, // 90 'Z'
-    {0x0E,0x08,0x08,0x08,0x08,0x08,0x0E}, // 91 '['
-    {0x10,0x10,0x08,0x04,0x02,0x01,0x01}, // 92 '\'
-    {0x0E,0x02,0x02,0x02,0x02,0x02,0x0E}, // 93 ']'
-    {0x04,0x0A,0x11,0x00,0x00,0x00,0x00}, // 94 '^'
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x1F}, // 95 '_'
-    {0x08,0x04,0x00,0x00,0x00,0x00,0x00}, // 96 '`'
-    {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, // 97 'a'
-    {0x10,0x10,0x1E,0x11,0x11,0x11,0x1E}, // 98 'b'
-    {0x00,0x00,0x0E,0x11,0x10,0x11,0x0E}, // 99 'c'
-    {0x01,0x01,0x0F,0x11,0x11,0x11,0x0F}, // 100 'd'
-    {0x00,0x00,0x0E,0x11,0x1F,0x10,0x0E}, // 101 'e'
-    {0x02,0x05,0x04,0x0E,0x04,0x04,0x04}, // 102 'f'
-    {0x00,0x00,0x0F,0x11,0x0F,0x01,0x0E}, // 103 'g'
-    {0x10,0x10,0x16,0x19,0x11,0x11,0x11}, // 104 'h'
-    {0x04,0x00,0x0C,0x04,0x04,0x04,0x0E}, // 105 'i'
-    {0x02,0x00,0x06,0x02,0x02,0x12,0x0C}, // 106 'j'
-    {0x10,0x10,0x12,0x14,0x18,0x14,0x12}, // 107 'k'
-    {0x0C,0x04,0x04,0x04,0x04,0x04,0x0E}, // 108 'l'
-    {0x00,0x00,0x1A,0x15,0x15,0x11,0x11}, // 109 'm'
-    {0x00,0x00,0x16,0x19,0x11,0x11,0x11}, // 110 'n'
-    {0x00,0x00,0x0E,0x11,0x11,0x11,0x0E}, // 111 'o'
-    {0x00,0x00,0x1E,0x11,0x1E,0x10,0x10}, // 112 'p'
-    {0x00,0x00,0x0F,0x11,0x0F,0x01,0x01}, // 113 'q'
-    {0x00,0x00,0x16,0x19,0x10,0x10,0x10}, // 114 'r'
-    {0x00,0x00,0x0E,0x10,0x0E,0x01,0x1E}, // 115 's'
-    {0x04,0x04,0x0E,0x04,0x04,0x05,0x02}, // 116 't'
-    {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, // 117 'u'
-    {0x00,0x00,0x11,0x11,0x11,0x0A,0x04}, // 118 'v'
-    {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, // 119 'w'
-    {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11}, // 120 'x'
-    {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, // 121 'y'
-    {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F}, // 122 'z'
-    {0x02,0x04,0x04,0x08,0x04,0x04,0x02}, // 123 '{'
-    {0x04,0x04,0x04,0x04,0x04,0x04,0x04}, // 124 '|'
-    {0x08,0x04,0x04,0x02,0x04,0x04,0x08}, // 125 '}'
-    {0x00,0x00,0x08,0x15,0x02,0x00,0x00}, // 126 '~'
-};
+static bool initFonts(const char* fontPath) {
+    if (TTF_Init() < 0) return false;
+    gFontPath = fontPath;
+    gFontSmall  = TTF_OpenFont(fontPath, 10);
+    gFontNormal = TTF_OpenFont(fontPath, gFontSizeNormal);
+    gFontLarge  = TTF_OpenFont(fontPath, 18);
+    if (!gFontNormal) { fprintf(stderr, "TTF Error: %s\n", TTF_GetError()); return false; }
+    return true;
+}
 
-static void drawChar(SDL_Renderer* rnd, int x, int y, char ch, int scale,
-                     Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+static void closeFonts() {
+    if (gFontSmall)  { TTF_CloseFont(gFontSmall);  gFontSmall  = nullptr; }
+    if (gFontNormal) { TTF_CloseFont(gFontNormal);  gFontNormal = nullptr; }
+    if (gFontLarge)  { TTF_CloseFont(gFontLarge);   gFontLarge  = nullptr; }
+    TTF_Quit();
+}
+
+static void setFontSize(int size) {
+    if (size < 8) size = 8;
+    if (size > 32) size = 32;
+    gFontSizeNormal = size;
+    if (gFontNormal) TTF_CloseFont(gFontNormal);
+    gFontNormal = TTF_OpenFont(gFontPath.c_str(), gFontSizeNormal);
+}
+
+static void drawTextTTF(SDL_Renderer* rnd, int x, int y, const char* text,
+                        Uint8 r, Uint8 g, Uint8 b, Uint8 a,
+                        TTF_Font* font = nullptr, int maxWidth = 0)
 {
-    int idx = (int)ch - FONT_FIRST_CHAR;
-    if (idx < 0 || idx > (FONT_LAST_CHAR - FONT_FIRST_CHAR)) return;
-    SDL_SetRenderDrawColor(rnd, r, g, b, a);
-    const unsigned char* glyph = FONT_5x7[idx];
-    for (int row = 0; row < GLYPH_H; row++) {
-        unsigned char bits = glyph[row];
-        for (int col = 0; col < GLYPH_W; col++) {
-            if (bits & (1 << (GLYPH_W - 1 - col))) {
-                SDL_Rect px = { x + col * scale, y + row * scale, scale, scale };
-                SDL_RenderFillRect(rnd, &px);
-            }
-        }
+    if (!text || text[0] == '\0') return;
+    if (!font) font = gFontNormal;
+    if (!font) return;
+    SDL_Color col = {r, g, b, a};
+    SDL_Surface* surf = (maxWidth > 0)
+        ? TTF_RenderUTF8_Blended_Wrapped(font, text, col, (Uint32)maxWidth)
+        : TTF_RenderUTF8_Blended(font, text, col);
+    if (!surf) return;
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(rnd, surf);
+    if (tex) {
+        SDL_SetTextureAlphaMod(tex, a);
+        SDL_Rect dst = {x, y, surf->w, surf->h};
+        SDL_RenderCopy(rnd, tex, nullptr, &dst);
+        SDL_DestroyTexture(tex);
     }
+    SDL_FreeSurface(surf);
 }
 
-static void drawText(SDL_Renderer* rnd, int x, int y, const char* text,
-                     Uint8 r, Uint8 g, Uint8 b, Uint8 a, int scale = -1)
-{
-    if (!text) return;
-    if (scale < 0) scale = L.fontScale;
-    int cx = x;
-    int spacing = (GLYPH_W + 1) * scale;
-    for (int i = 0; text[i] != '\0'; i++) {
-        if (text[i] == '\n') {
-            cx = x;
-            y += (GLYPH_H + 2) * scale;
-            continue;
-        }
-        drawChar(rnd, cx, y, text[i], scale, r, g, b, a);
-        cx += spacing;
-    }
+static int textWidthTTF(const char* text, TTF_Font* font = nullptr) {
+    if (!text || text[0] == '\0') return 0;
+    if (!font) font = gFontNormal;
+    if (!font) return 0;
+    int w = 0, h = 0;
+    TTF_SizeUTF8(font, text, &w, &h);
+    return w;
 }
 
-static int textWidth(const char* text, int scale = -1) {
-    if (!text) return 0;
-    if (scale < 0) scale = L.fontScale;
-    int maxW = 0, curW = 0;
-    int spacing = (GLYPH_W + 1) * scale;
-    for (int i = 0; text[i]; i++) {
-        if (text[i] == '\n') {
-            if (curW > maxW) maxW = curW;
-            curW = 0;
-        } else {
-            curW += spacing;
-        }
-    }
-    if (curW > maxW) maxW = curW;
-    return maxW;
-}
-
-static int textHeight(const char* text, int scale = -1) {
-    if (!text) return 0;
-    if (scale < 0) scale = L.fontScale;
-    int lines = 1;
-    for (int i = 0; text[i]; i++) {
-        if (text[i] == '\n') lines++;
-    }
-    return lines * (GLYPH_H + 2) * scale;
+static int textHeightTTF(TTF_Font* font = nullptr) {
+    if (!font) font = gFontNormal;
+    if (!font) return 14;
+    return TTF_FontHeight(font);
 }
 
 // ════════════════════════════════════════════
@@ -263,49 +207,168 @@ static int textHeight(const char* text, int scale = -1) {
 static void fillRoundedRect(SDL_Renderer* rnd, int x, int y, int w, int h,
                             int radius, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
-    SDL_SetRenderDrawColor(rnd, r, g, b, a);
-    SDL_Rect rc = {x + radius, y, w - 2*radius, h};
-    SDL_RenderFillRect(rnd, &rc);
-    SDL_Rect rl = {x, y + radius, radius, h - 2*radius};
-    SDL_RenderFillRect(rnd, &rl);
-    SDL_Rect rr2 = {x + w - radius, y + radius, radius, h - 2*radius};
-    SDL_RenderFillRect(rnd, &rr2);
-    for (int cy2 = -radius; cy2 <= radius; cy2++) {
-        for (int cx2 = -radius; cx2 <= radius; cx2++) {
-            if (cx2*cx2 + cy2*cy2 <= radius*radius) {
-                SDL_RenderDrawPoint(rnd, x + radius + cx2, y + radius + cy2);
-                SDL_RenderDrawPoint(rnd, x + w - radius + cx2, y + radius + cy2);
-                SDL_RenderDrawPoint(rnd, x + radius + cx2, y + h - radius + cy2);
-                SDL_RenderDrawPoint(rnd, x + w - radius + cx2, y + h - radius + cy2);
-            }
-        }
-    }
+    if (radius < 1) radius = 1;
+    if (radius > w/2) radius = w/2;
+    if (radius > h/2) radius = h/2;
+
+    roundedBoxRGBA(rnd, (Sint16)x, (Sint16)y,
+                   (Sint16)(x + w), (Sint16)(y + h),
+                   (Sint16)radius, r, g, b, a);
+
+    aacircleRGBA(rnd, (Sint16)(x + radius),     (Sint16)(y + radius),     (Sint16)radius, r, g, b, a);
+    aacircleRGBA(rnd, (Sint16)(x + w - radius), (Sint16)(y + radius),     (Sint16)radius, r, g, b, a);
+    aacircleRGBA(rnd, (Sint16)(x + radius),     (Sint16)(y + h - radius), (Sint16)radius, r, g, b, a);
+    aacircleRGBA(rnd, (Sint16)(x + w - radius), (Sint16)(y + h - radius), (Sint16)radius, r, g, b, a);
 }
 
 static void fillEllipse(SDL_Renderer* rnd, int cx, int cy, int rx, int ry,
                         Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
-    SDL_SetRenderDrawColor(rnd, r, g, b, a);
-    for (int dy = -ry; dy <= ry; dy++) {
-        int halfW = (int)(rx * sqrt(1.0 - (double)(dy*dy)/(double)(ry*ry)));
-        SDL_RenderDrawLine(rnd, cx - halfW, cy + dy, cx + halfW, cy + dy);
-    }
+    filledEllipseRGBA(rnd, (Sint16)cx, (Sint16)cy, (Sint16)rx, (Sint16)ry, r, g, b, a);
+    aaellipseRGBA(rnd, (Sint16)cx, (Sint16)cy, (Sint16)rx, (Sint16)ry, r, g, b, a);
 }
 
 static void drawRoundedRectOutline(SDL_Renderer* rnd, int x, int y, int w, int h,
                                    int radius, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
-    SDL_SetRenderDrawColor(rnd, r, g, b, a);
-    SDL_RenderDrawLine(rnd, x + radius, y, x + w - radius, y);
-    SDL_RenderDrawLine(rnd, x + radius, y + h, x + w - radius, y + h);
-    SDL_RenderDrawLine(rnd, x, y + radius, x, y + h - radius);
-    SDL_RenderDrawLine(rnd, x + w, y + radius, x + w, y + h - radius);
+    roundedRectangleRGBA(rnd, (Sint16)x, (Sint16)y, (Sint16)(x + w), (Sint16)(y + h),
+                         (Sint16)radius, r, g, b, a);
 }
+static void renderBackdropPanel(SDL_Renderer* rnd) {
+    if (!gBackdropPanelOpen) return;
+
+    // ابعاد پنل
+    int panelW = (int)(320 * L.s);
+    int panelH = (int)(420 * L.s);
+    int panelX = (L.winW - panelW) / 2;
+    int panelY = L.TOOLBAR_HEIGHT + (int)(20 * L.s);
+
+    // پس‌زمینه پنل
+    fillRoundedRect(rnd, panelX, panelY, panelW, panelH, 10, 240, 240, 245, 255);
+    drawRoundedRectOutline(rnd, panelX, panelY, panelW, panelH, 10, 180, 180, 200, 255);
+
+    // عنوان
+    drawTextTTF(rnd, panelX + 10, panelY + 8, "Background Settings", 50, 50, 80, 255, gFontLarge);
+
+    // نام backdrop فعلی
+    string curName = "Current: " + gCurrentBackdropName;
+    drawTextTTF(rnd, panelX + 10, panelY + 32, curName.c_str(), 100, 100, 130, 255);
+
+    // دکمه بستن (X)
+    int closeBtnSz = (int)(24 * L.s);
+    int closeBtnX = panelX + panelW - closeBtnSz - 8;
+    int closeBtnY = panelY + 8;
+    fillRoundedRect(rnd, closeBtnX, closeBtnY, closeBtnSz, closeBtnSz, 5, 220, 60, 60, 255);
+    drawTextTTF(rnd, closeBtnX + 6, closeBtnY + 2, "X", 255, 255, 255, 255);
+
+    // زیرمنوها (tabs)
+    const char* tabs[] = {"Library", "Upload", "Editor"};
+    int tabW = panelW / 3;
+    int tabH = (int)(32 * L.s);
+    int tabY = panelY + (int)(55 * L.s);
+    for (int i = 0; i < 3; i++) {
+        int tabX = panelX + i * tabW;
+        bool active = (gBackdropPanelTab == i);
+        fillRoundedRect(rnd, tabX, tabY, tabW, tabH, 5,
+            active ? 100 : 200,
+            active ? 150 : 200,
+            active ? 220 : 210,
+            255);
+        int tw = textWidthTTF(tabs[i]);
+        drawTextTTF(rnd, tabX + (tabW - tw) / 2, tabY + (tabH - textHeightTTF()) / 2,
+            tabs[i],
+            active ? 255 : 80,
+            active ? 255 : 80,
+            active ? 255 : 80,
+            255);
+    }
+
+    // محتوای هر tab
+    int contentY = tabY + tabH + (int)(10 * L.s);
+    int contentX = panelX + (int)(10 * L.s);
+    int contentW = panelW - (int)(20 * L.s);
+
+if (gBackdropPanelTab == 0) {
+    // Library Tab
+    drawTextTTF(rnd, contentX, contentY, "Default Backgrounds:", 60, 60, 80, 255);
+    int thumbW = (int)(60 * L.s);
+    int thumbH = (int)(45 * L.s);
+    int itemH = thumbH + (int)(10 * L.s);
+    for (int i = 0; i < gBackdropLibraryCount; i++) {
+        int itemY = contentY + (int)(20 * L.s) + i * (itemH + 8);
+        bool isSelected = (gCurrentBackdropName == gBackdropItems[i].name);
+
+        // پس‌زمینه آیتم
+        fillRoundedRect(rnd, contentX, itemY, contentW, itemH, 6,
+            isSelected ? 80 : 230,
+            isSelected ? 140 : 230,
+            isSelected ? 200 : 235,
+            255);
+
+        // پیش‌نمایش تصویر
+        SDL_Surface* prevSurf = IMG_Load(gBackdropItems[i].path);
+        if (prevSurf) {
+            SDL_Texture* prevTex = SDL_CreateTextureFromSurface(rnd, prevSurf);
+            SDL_FreeSurface(prevSurf);
+            if (prevTex) {
+                SDL_Rect thumbRect = {
+                    contentX + 4,
+                    itemY + (itemH - thumbH) / 2,
+                    thumbW,
+                    thumbH
+                };
+                SDL_RenderCopy(rnd, prevTex, nullptr, &thumbRect);
+                SDL_DestroyTexture(prevTex);
+            }
+        } else {
+            // اگر فایل نبود، یک مستطیل خاکستری نشون بده
+            fillRoundedRect(rnd, contentX + 4, itemY + (itemH - thumbH) / 2,
+                thumbW, thumbH, 4, 180, 180, 180, 255);
+            drawTextTTF(rnd, contentX + 8, itemY + itemH/2 - 6, "?", 100, 100, 100, 255);
+        }
+
+        // نام backdrop
+        drawTextTTF(rnd, contentX + thumbW + 12, itemY + (itemH - textHeightTTF()) / 2,
+            gBackdropItems[i].name,
+            isSelected ? 255 : 50,
+            isSelected ? 255 : 50,
+            isSelected ? 255 : 60,
+            255);
+
+        // تیک انتخاب
+        if (isSelected) {
+            drawTextTTF(rnd, contentX + contentW - 30, itemY + (itemH - textHeightTTF()) / 2,
+                "✓", 255, 255, 255, 255);
+        }
+    }
+    } else if (gBackdropPanelTab == 1) {
+        // Upload Tab
+        drawTextTTF(rnd, contentX, contentY, "Upload from system:", 60, 60, 80, 255);
+        int btnW = (int)(140 * L.s), btnH = (int)(40 * L.s);
+        int btnX = panelX + (panelW - btnW) / 2;
+        int btnY = contentY + (int)(30 * L.s);
+        fillRoundedRect(rnd, btnX, btnY, btnW, btnH, 8, 50, 130, 200, 255);
+        int tw = textWidthTTF("Choose Image...");
+        drawTextTTF(rnd, btnX + (btnW - tw) / 2, btnY + (btnH - textHeightTTF()) / 2,
+            "Choose Image...", 255, 255, 255, 255);
+    } else if (gBackdropPanelTab == 2) {
+        // Editor Tab
+        drawTextTTF(rnd, contentX, contentY, "Built-in editor:", 60, 60, 80, 255);
+        int btnW = (int)(140 * L.s), btnH = (int)(40 * L.s);
+        int btnX = panelX + (panelW - btnW) / 2;
+        int btnY = contentY + (int)(30 * L.s);
+        fillRoundedRect(rnd, btnX, btnY, btnW, btnH, 8, 130, 50, 170, 255);
+        int tw = textWidthTTF("Open Editor");
+        drawTextTTF(rnd, btnX + (btnW - tw) / 2, btnY + (btnH - textHeightTTF()) / 2,
+            "Open Editor", 255, 255, 255, 255);
+    }
+}
+
 
 // ════════════════════════════════════════════
 //  Category
 // ════════════════════════════════════════════
-enum class Category { MOTION, LOOKS, SOUND, EVENTS, CONTROL, SENSING, OPERATORS, VARIABLES };
+enum Category { MOTION, LOOKS, SOUND, EVENTS, CONTROL, SENSING, OPERATORS, VARIABLES };
 static const int NUM_CATEGORIES = 8;
 
 static SDL_Color catColor(Category c) {
@@ -337,28 +400,6 @@ static const char* catName(Category c) {
 }
 
 // ════════════════════════════════════════════
-//  Costume System
-// ════════════════════════════════════════════
-enum class CostumeType { CAT, CIRCLE, SQUARE, TRIANGLE, STAR, ARROW };
-
-struct Costume {
-    string name;
-    CostumeType type;
-    SDL_Color primaryColor;
-    SDL_Color secondaryColor;
-};
-struct UploadedImage {
-    string filename;
-    SDL_Texture* texture;
-    int width, height;
-    float scale;
-    float rotation;
-    bool flippedH, flippedV;
-
-    UploadedImage() : texture(nullptr), width(0), height(0), scale(1.0f), rotation(0), flippedH(false), flippedV(false) {}
-    ~UploadedImage() { if(texture) SDL_DestroyTexture(texture); }
-};
-// ════════════════════════════════════════════
 //  Sprite
 // ════════════════════════════════════════════
 struct Sprite {
@@ -378,7 +419,6 @@ struct Sprite {
     float colorEffect;
     int currentCostume;
     SDL_Texture* uploadedTexture;
-    vector<Costume> costumes;
 };
 
 static int gNextSpriteNum = 2;
@@ -398,15 +438,13 @@ static Sprite createDefaultSprite(const char* name, float x, float y, SDL_Color 
     sp.ghostEffect = 0;
     sp.colorEffect = 0;
     sp.currentCostume = 0;
-    sp.costumes.push_back({"costume1", CostumeType::CAT, col, {255, 200, 150, 255}});
-    sp.costumes.push_back({"costume2", CostumeType::CIRCLE, {100, 150, 255, 255}, {200, 200, 255, 255}});
     return sp;
 }
 
 // ════════════════════════════════════════════
 //  Block types
 // ════════════════════════════════════════════
-enum class BlockShape { COMMAND, C_BLOCK, HAT, CAP, REPORTER, BOOLEAN };
+enum BlockShape { COMMAND, C_BLOCK, HAT, CAP, REPORTER, BOOLEAN };
 
 struct InputField {
     string value;
@@ -445,7 +483,8 @@ static int gNextBlockId = 1000;
 static bool gIsRunning = false;
 static float gTimer = 0;
 static int gBgColor = 0;
-static int gHighlightBlockId = -1; // بلاکی که الان هایلایته
+static float gToolbarAnimOffset = 0;
+
 static const SDL_Color BG_COLORS[] = {
     {255,255,255,255},
     {200,230,255,255},
@@ -658,7 +697,6 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, vector<Block>& allBlocks, boo
     SDL_Color col = catColor(b.cat);
     Uint8 cr = col.r, cg = col.g, cb2 = col.b;
     if (highlight) { cr=min(255,cr+40); cg=min(255,cg+40); cb2=min(255,cb2+40); }
-    bool isHighlighted = (b.id == gHighlightBlockId);
     int bx=(int)b.x, by=(int)b.y, bw=(int)b.w, bh=(int)b.h, r=(int)L.BLOCK_CORNER_R;
 
     switch (b.shape) {
@@ -692,14 +730,29 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, vector<Block>& allBlocks, boo
         break; }
     }
 
-    { int tx=bx+(int)(8*L.s), ty; if(b.shape==BlockShape::C_BLOCK) ty=by+(int)(L.CBLOCK_BAR_H*0.25f); else if(b.shape==BlockShape::HAT) ty=by+(int)(14*L.s); else ty=by+(int)(bh/2)-textHeight("A")/2; drawText(rnd,tx,ty,b.text.c_str(),255,255,255,255); }
+    { int tx=bx+(int)(8*L.s), ty; if(b.shape==BlockShape::C_BLOCK) ty=by+(int)(L.CBLOCK_BAR_H*0.25f); else if(b.shape==BlockShape::HAT) ty=by+(int)(14*L.s); else ty=by+(int)(bh/2)-textHeightTTF()/2; drawTextTTF(rnd, tx,ty,b.text.c_str(),255,255,255,255); }
 
     for (int fi=0;fi<(int)b.inputs.size();fi++) {
         auto& inp=b.inputs[fi];
-        int fx=bx+(int)inp.relX, fy=by+(int)inp.relY, fw=(int)inp.width, fh=(int)inp.height;
+        int fy=by+(int)inp.relY, fw=(int)inp.width, fh=(int)inp.height;
+
+        int textStartX = bx + (int)(8*L.s);
+        int textEndX = textStartX + textWidthTTF(b.text.c_str()) + (int)(6*L.s);
+
+        int fx = bx + (int)inp.relX;
+        if (fx < textEndX && b.inputs.size() == 1) {
+            fx = textEndX;
+        }
+        if (fi > 0 && b.inputs.size() > 1) {
+            auto& prev = b.inputs[fi-1];
+            int prevFx = bx + (int)prev.relX;
+            if (prevFx < textEndX) prevFx = textEndX;
+            int minFx = prevFx + (int)prev.width + (int)(8*L.s);
+            if (fx < minFx) fx = minFx;
+        }
         fillRoundedRect(rnd,fx,fy,fw,fh,4,255,255,255,255);
-        if (inp.editing) { drawRoundedRectOutline(rnd,fx-1,fy-1,fw+2,fh+2,4,50,150,255,255); int tw=textWidth(inp.value.c_str()); int cursorX=fx+3+tw; SDL_SetRenderDrawColor(rnd,0,0,0,255); SDL_RenderDrawLine(rnd,cursorX,fy+2,cursorX,fy+fh-2); }
-        drawText(rnd,fx+3,fy+(fh-textHeight("0"))/2,inp.value.c_str(),0,0,0,255);
+        if (inp.editing) { drawRoundedRectOutline(rnd,fx-1,fy-1,fw+2,fh+2,4,50,150,255,255); int tw=textWidthTTF(inp.value.c_str()); int cursorX=fx+3+tw; SDL_SetRenderDrawColor(rnd,0,0,0,255); SDL_RenderDrawLine(rnd,cursorX,fy+2,cursorX,fy+fh-2); }
+        drawTextTTF(rnd, fx+3,fy+(fh-textHeightTTF())/2,inp.value.c_str(),0,0,0,255);
     }
 
     for (int si=0;si<(int)b.opSlots.size();si++) {
@@ -708,14 +761,6 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, vector<Block>& allBlocks, boo
             bool hasInput=false;
             for (auto& inp:b.inputs) if (abs(inp.relX-sl.relX)<5&&abs(inp.relY-sl.relY)<5){hasInput=true;break;}
             if (!hasInput) { int sx2=bx+(int)sl.relX,sy2=by+(int)sl.relY,sw2=(int)sl.width,sh2=(int)sl.height; fillRoundedRect(rnd,sx2,sy2,sw2,sh2,sh2/2,255,255,255,120); }
-            // حاشیه زرد برای بلاک در حال اجرا
-            if (isHighlighted) {
-                SDL_SetRenderDrawColor(rnd, 255, 220, 0, 255);
-                SDL_Rect hlRect = {bx-3, by-3, bw+6, bh+6};
-                SDL_RenderDrawRect(rnd, &hlRect);
-                SDL_Rect hlRect2 = {bx-2, by-2, bw+4, bh+4};
-                SDL_RenderDrawRect(rnd, &hlRect2);
-            }
         }
     }
 }
@@ -724,7 +769,7 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, vector<Block>& allBlocks, boo
 //  Draw cat sprite
 // ════════════════════════════════════════════
 static void drawCatSprite(SDL_Renderer* rnd, int cx, int cy, int sz, SDL_Color col) {
-    SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND); // مطمئن شویم فعال است
+    SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND);
     int half=sz/2;
     fillEllipse(rnd,cx,cy,half,half,col.r,col.g,col.b,col.a);
     int earH=half*2/3, earW=half/3;
@@ -733,20 +778,21 @@ static void drawCatSprite(SDL_Renderer* rnd, int cx, int cy, int sz, SDL_Color c
     fillEllipse(rnd,cx+half/3,cy-half/4,sz/10,sz/8,255,255,255,col.a);
     fillEllipse(rnd,cx-half/3,cy-half/4,sz/20,sz/14,0,0,0,col.a);
     fillEllipse(rnd,cx+half/3,cy-half/4,sz/20,sz/14,0,0,0,col.a);
-SDL_SetRenderDrawColor(rnd,0,0,0,col.a);    SDL_RenderDrawLine(rnd,cx-half/5,cy+half/4,cx,cy+half/3);
-    SDL_RenderDrawLine(rnd,cx+half/5,cy+half/4,cx,cy+half/3);
+    SDL_SetRenderDrawColor(rnd,0,0,0,col.a);
+    aalineRGBA(rnd,(Sint16)(cx-half/5),(Sint16)(cy+half/4),(Sint16)cx,(Sint16)(cy+half/3),0,0,0,col.a);
+    aalineRGBA(rnd,(Sint16)(cx+half/5),(Sint16)(cy+half/4),(Sint16)cx,(Sint16)(cy+half/3),0,0,0,col.a);
 }
 
 static void drawSpeechBubble(SDL_Renderer* rnd, int cx, int cy, const char* text, bool isThink) {
     if (!text||text[0]=='\0') return;
-    int tw=textWidth(text)+(int)(20*L.s), th=textHeight(text)+(int)(16*L.s);
+    int tw=textWidthTTF(text)+(int)(20*L.s), th=textHeightTTF()+(int)(16*L.s);
     int bx2=cx-tw/2, by2=cy-th-(int)(20*L.s);
     fillRoundedRect(rnd,bx2,by2,tw,th,10,255,255,255,255);
     SDL_SetRenderDrawColor(rnd,180,180,180,255);
     SDL_Rect bdr={bx2,by2,tw,th}; SDL_RenderDrawRect(rnd,&bdr);
     if (isThink) { fillEllipse(rnd,cx,by2+th+5,5,5,255,255,255,255); fillEllipse(rnd,cx+3,by2+th+12,3,3,255,255,255,255); }
     else { SDL_SetRenderDrawColor(rnd,255,255,255,255); for(int row=0;row<12;row++){int y=by2+th+row;float t=row/12.0f;int lx=(int)((1-t)*(cx-5)+t*cx),rx=(int)((1-t)*(cx+5)+t*cx);SDL_RenderDrawLine(rnd,lx,y,rx,y);} }
-    drawText(rnd,bx2+(int)(10*L.s),by2+(int)(8*L.s),text,0,0,0,255);
+    drawTextTTF(rnd, bx2+(int)(10*L.s),by2+(int)(8*L.s),text,0,0,0,255);
 }
 
 static void detachBlock(vector<Block>& blocks, int blockId) {
@@ -837,6 +883,30 @@ int main(int argc, char* argv[]) {
     int winW=BASE_WIDTH, winH=BASE_HEIGHT;
     L.update(winW,winH);
     SDL_StartTextInput();
+    SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+
+    const char* fontPaths[] = {
+        "DejaVuSans.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        "C:/Windows/Fonts/verdana.ttf",
+        "C:/msys64/mingw64/share/fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        nullptr
+    };
+    bool fontLoaded = false;
+    for (int fi = 0; fontPaths[fi]; fi++) {
+        if (initFonts(fontPaths[fi])) { fontLoaded = true; break; }
+    }
+    if (!fontLoaded) {
+        fprintf(stderr, "WARNING: Could not load any TTF font. Place DejaVuSans.ttf next to the exe.\n");
+    }
 
     vector<Sprite> sprites;
     sprites.push_back(createDefaultSprite("Sprite1",0,0,{255,140,0,255}));
@@ -915,34 +985,278 @@ int main(int argc, char* argv[]) {
             if (e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT) {
                 int mx=e.button.x, my=e.button.y;
                 bool clickedOnField=false;
+                // ─── Backdrop Panel Clicks ───
+                if (gBackdropPanelOpen) {
+    int panelW = (int)(320 * L.s);
+    int panelH = (int)(420 * L.s);
+    int panelX = (L.winW - panelW) / 2;
+    int panelY = L.TOOLBAR_HEIGHT + (int)(20 * L.s);
 
-                46545;
+    int closeSz = (int)(24 * L.s);
+    int closeBtnX = panelX + panelW - closeSz - 8;
+    int closeBtnY = panelY + 8;
+    if (mx >= closeBtnX && mx <= closeBtnX + closeSz &&
+        my >= closeBtnY && my <= closeBtnY + closeSz) {
+        gBackdropPanelOpen = false;
+        continue;
+    }
+
+    int tabW = panelW / 3;
+    int tabH = (int)(32 * L.s);
+    int tabY = panelY + (int)(55 * L.s);
+    for (int i = 0; i < 3; i++) {
+        int tabX = panelX + i * tabW;
+        if (mx >= tabX && mx <= tabX + tabW &&
+            my >= tabY && my <= tabY + tabH) {
+            gBackdropPanelTab = i;
+            continue;
+        }
+    }
+
+    int contentY = tabY + tabH + (int)(10 * L.s);
+    int contentX = panelX + (int)(10 * L.s);
+    int contentW = panelW - (int)(20 * L.s);
+
+    if (gBackdropPanelTab == 0) {
+        int itemH = (int)(36 * L.s);
+        for (int i = 0; i < gBackdropLibraryCount; i++) {
+            int itemY = contentY + (int)(20 * L.s) + i * (itemH + 6);
+            if (mx >= contentX && mx <= contentX + contentW &&
+                my >= itemY && my <= itemY + itemH) {
+                gCurrentBackdropName = gBackdropItems[i].name;
+                loadBackdrop(rnd, gBackdropItems[i].path);
+                break;
+            }
+        }
+    } else if (gBackdropPanelTab == 1) {
+        int btnW = (int)(140 * L.s), btnH = (int)(40 * L.s);
+        int btnX = panelX + (panelW - btnW) / 2;
+        int btnY = contentY + (int)(30 * L.s);
+        if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH) {
+            const char* filters[4] = {"*.png", "*.jpg", "*.jpeg", "*.bmp"};
+            const char* fileName = tinyfd_openFileDialog(
+                "Select Background Image", "", 4, filters, "Image files", 0);
+            if (fileName) {
+                string fullPath = fileName;
+                size_t sep = fullPath.find_last_of("/\\");
+                gCurrentBackdropName = (sep != string::npos)
+                    ? fullPath.substr(sep + 1) : fullPath;
+                loadBackdrop(rnd, fileName);
+                gBackdropPanelOpen = false;
+            }
+        }
+    } else if (gBackdropPanelTab == 2) {
+        int btnW = (int)(140 * L.s), btnH = (int)(40 * L.s);
+        int btnX = panelX + (panelW - btnW) / 2;
+        int btnY = contentY + (int)(30 * L.s);
+        if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH) {
+            gBackdropEditMode = true;
+            gBackdropPanelOpen = false;
+            costumeEditMode = true;
+            selectedCostumeSpriteIdx = -1;
+            if (costumeCanvas) SDL_DestroyTexture(costumeCanvas);
+            costumeCanvas = SDL_CreateTexture(rnd, SDL_PIXELFORMAT_RGBA8888,
+                SDL_TEXTUREACCESS_TARGET, canvasW, canvasH);
+            SDL_SetRenderTarget(rnd, costumeCanvas);
+            SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
+            SDL_RenderClear(rnd);
+            // اگر backdrop فعلی موجوده، اون رو روی canvas کپی کن
+            if (gBackdropTexture) {
+                SDL_RenderCopy(rnd, gBackdropTexture, nullptr, nullptr);
+            }
+            SDL_SetRenderTarget(rnd, nullptr);
+
+        }
+    }
+    continue;
+}
+
+                // Sprite info panel fields and costume edit mode checks...
+                {
+                    int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
+                    int thumbSz = L.SPRITE_THUMB;
+                    int infoY = spriteAreaY + thumbSz + 10;
+                    int infoX = L.PALETTE_WIDTH + 5;
+                    int fieldW2 = (int)(L.STAGE_WIDTH * 0.35f);
+                    int fieldH2 = (int)(22 * L.s);
+
+                    int layerBtnW = (int)(40 * L.s), layerBtnH = fieldH2;
+                    int row3Y = infoY + 2 * (fieldH2 + 8);
+                    int layerBtnY = row3Y;
+
+                    int frontBtnX = infoX + fieldW2 * 2 - layerBtnW - 5;
+                    if (mx >= frontBtnX && mx <= frontBtnX + layerBtnW &&
+                        my >= layerBtnY && my <= layerBtnY + layerBtnH) {
+                        if (selectedSpriteIdx < (int)sprites.size() && sprites.size() > 1) {
+                            std::swap(sprites[selectedSpriteIdx], sprites.back());
+                            selectedSpriteIdx = (int)sprites.size() - 1;
+                        }
+                        continue;
+                    }
+                    if(costumeEditMode && costumeCanvas) {
+                        int editorX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
+                        int editorY = L.TOOLBAR_HEIGHT + 20;
+
+                        int drawX = mx - editorX - 20;
+                        int drawY = my - editorY - 20;
+
+                        if(drawX >= 0 && drawX < canvasW && drawY >= 0 && drawY < canvasH) {
+                            isDrawing = true;
+                            lastDrawX = drawX;
+                            lastDrawY = drawY;
+                        }
+                    }
+
+                    int backBtnX = frontBtnX - layerBtnW - 5;
+                    if (mx >= backBtnX && mx <= backBtnX + layerBtnW &&
+                        my >= layerBtnY && my <= layerBtnY + layerBtnH) {
+                        if (selectedSpriteIdx < (int)sprites.size() && sprites.size() > 1) {
+                            std::swap(sprites[selectedSpriteIdx], sprites.front());
+                            selectedSpriteIdx = 0;
+                        }
+                        continue;
+                    }
+                }
+                if(costumeEditMode && costumeCanvas) {
+                    int editorX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
+                    int editorY = L.TOOLBAR_HEIGHT + 20;
+                    int toolbarY = editorY + canvasH + 30;
+
+                    if(mx >= editorX+20 && mx <= editorX+80 && my >= toolbarY && my <= toolbarY+30) {
+                        penColorR = 0; penColorG = 0; penColorB = 0;
+                    }
+                    if(mx >= editorX+90 && mx <= editorX+150 && my >= toolbarY && my <= toolbarY+30) {
+                        penColorR = 255; penColorG = 255; penColorB = 255;
+                    }
+                    int colorBtnY = toolbarY + 40;
+                    int colorBtnW = 25, colorBtnH = 25;
+
+                    if(mx >= editorX+20 && mx <= editorX+20+colorBtnW &&
+                       my >= colorBtnY && my <= colorBtnY+colorBtnH) {
+                        penColorR = 255; penColorG = 0; penColorB = 0;
+                    }
+                    if(mx >= editorX+50 && mx <= editorX+50+colorBtnW &&
+                       my >= colorBtnY && my <= colorBtnY+colorBtnH) {
+                        penColorR = 0; penColorG = 255; penColorB = 0;
+                    }
+                    if(mx >= editorX+80 && mx <= editorX+80+colorBtnW &&
+                       my >= colorBtnY && my <= colorBtnY+colorBtnH) {
+                        penColorR = 0; penColorG = 0; penColorB = 255;
+                    }
+                    if(mx >= editorX+110 && mx <= editorX+110+colorBtnW &&
+                       my >= colorBtnY && my <= colorBtnY+colorBtnH) {
+                        penColorR = 0; penColorG = 0; penColorB = 0;
+                    }
+                    if(mx >= editorX+140 && mx <= editorX+140+colorBtnW &&
+                       my >= colorBtnY && my <= colorBtnY+colorBtnH) {
+                        penColorR = 255; penColorG = 255; penColorB = 255;
+                    }
+                    if(mx >= editorX+160 && mx <= editorX+220 && my >= toolbarY && my <= toolbarY+30) {
+                        if (gBackdropEditMode) {
+                            // ذخیره به عنوان backdrop
+                            if (gBackdropTexture) SDL_DestroyTexture(gBackdropTexture);
+                            gBackdropTexture = costumeCanvas;
+                            costumeCanvas = nullptr;
+                            gCurrentBackdropName = "custom";
+                            gBackdropEditMode = false;
+                        } else if(selectedCostumeSpriteIdx >= 0 && selectedCostumeSpriteIdx < (int)sprites.size()) {
+                            if(sprites[selectedCostumeSpriteIdx].uploadedTexture) SDL_DestroyTexture(sprites[selectedCostumeSpriteIdx].uploadedTexture);
+                            sprites[selectedCostumeSpriteIdx].uploadedTexture = costumeCanvas;
+                            costumeCanvas = nullptr;
+                        }
+                        costumeEditMode = false;
+                    }
+
+                    if(mx >= editorX+230 && mx <= editorX+290 && my >= toolbarY && my <= toolbarY+30) {
+                        if(costumeCanvas) SDL_DestroyTexture(costumeCanvas);
+                        costumeCanvas = nullptr;
+                        costumeEditMode = false;
+                    }
+                }
                 int panelX=L.PALETTE_WIDTH, stageW=L.STAGE_WIDTH;
                 int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
                 int thumbSize=L.SPRITE_THUMB;
                 int infoY=spriteAreaY+thumbSize+10, infoX=panelX+5;
                 int fieldW2=(int)(stageW*0.35f), fieldH2=(int)(22*L.s);
-                // کلیک روی دکمه Upload
-                                    infoY=spriteAreaY+thumbSize+10, infoX=panelX+5;
+                infoY=spriteAreaY+thumbSize+10, infoX=panelX+5;
 
+                // Upload button
                 {
-                    int uploadBtnW = (int)(60*L.s), uploadBtnH = fieldH2;
-                    int uploadBtnX = infoX + fieldW2*2 - uploadBtnW - 10;
+                    int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
+                    int thumbSz = L.SPRITE_THUMB;
+                    int infoY = spriteAreaY + thumbSz + 10;
+                    int infoX = L.PALETTE_WIDTH + 5;
+                    int fieldW2 = (int)(L.STAGE_WIDTH * 0.35f);
+                    int fieldH2 = (int)(22 * L.s);
+
+                    int uploadBtnW = (int)(60 * L.s), uploadBtnH = fieldH2;
+                    int uploadBtnX = infoX + fieldW2 * 2 - uploadBtnW - 10;
                     int uploadBtnY = infoY;
-                    if(mx>=uploadBtnX && mx<=uploadBtnX+uploadBtnW && my>=uploadBtnY && my<=uploadBtnY+uploadBtnH){
-                        // اینجا بعداً کد باز کردن فایل را می‌نویسیم
-                        // فعلاً برای تست یک فایل فرضی لود می‌کنیم
-                        if(selectedSpriteIdx < (int)sprites.size()){
-                            SDL_Surface* surf = IMG_Load("cat.png"); // نام فایل عکس خود را بگذارید
-                            if(surf){
-                                if(sprites[selectedSpriteIdx].uploadedTexture) SDL_DestroyTexture(sprites[selectedSpriteIdx].uploadedTexture);
-                                sprites[selectedSpriteIdx].uploadedTexture = SDL_CreateTextureFromSurface(rnd, surf);
-                                SDL_FreeSurface(surf);
+
+                    if(mx >= uploadBtnX && mx <= uploadBtnX + uploadBtnW &&
+                       my >= uploadBtnY && my <= uploadBtnY + uploadBtnH) {
+
+                        if(selectedSpriteIdx < (int)sprites.size()) {
+                            const char* filters[3] = { "*.png", "*.jpg", "*.jpeg" };
+                            const char* fileName = tinyfd_openFileDialog(
+                                "Select Image", "",
+                                3, filters,
+                                "Image files",
+                                0
+                            );
+
+                            if(fileName != NULL) {
+                                SDL_Surface* surf = IMG_Load(fileName);
+                                if(surf) {
+                                    if(sprites[selectedSpriteIdx].uploadedTexture)
+                                        SDL_DestroyTexture(sprites[selectedSpriteIdx].uploadedTexture);
+                                    sprites[selectedSpriteIdx].uploadedTexture = SDL_CreateTextureFromSurface(rnd, surf);
+                                    SDL_FreeSurface(surf);
+                                    cout << "Image loaded: " << fileName << endl;
+                                } else {
+                                    cout << "Failed to load: " << IMG_GetError() << endl;
+                                }
                             }
                         }
                     }
                 }
-                // ── Check sprite info panel fields ──
+
+                // Edit button
+                {
+                    int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
+                    int thumbSz = L.SPRITE_THUMB;
+                    int infoY = spriteAreaY + thumbSz + 10;
+                    int infoX = L.PALETTE_WIDTH + 5;
+                    int fieldW2 = (int)(L.STAGE_WIDTH * 0.35f);
+                    int fieldH2 = (int)(22 * L.s);
+
+                    int editBtnW = (int)(60*L.s), editBtnH = fieldH2;
+                    int uploadBtnW = (int)(60*L.s);
+                    int editBtnX = infoX + fieldW2*2 - uploadBtnW - editBtnW - 15;
+                    int editBtnY = infoY;
+
+                    if(mx >= editBtnX && mx <= editBtnX + editBtnW &&
+                    my >= editBtnY && my <= editBtnY + editBtnH) {
+                        costumeEditMode = !costumeEditMode;
+                        if(costumeEditMode) {
+                            selectedCostumeSpriteIdx = selectedSpriteIdx;
+                            if(costumeCanvas) SDL_DestroyTexture(costumeCanvas);
+                            costumeCanvas = SDL_CreateTexture(rnd, SDL_PIXELFORMAT_RGBA8888,
+                            SDL_TEXTUREACCESS_TARGET, canvasW, canvasH);
+                            SDL_SetRenderTarget(rnd, costumeCanvas);
+                            SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
+                            SDL_RenderClear(rnd);
+
+                            if(selectedSpriteIdx < (int)sprites.size() &&
+                               sprites[selectedSpriteIdx].uploadedTexture) {
+                                SDL_RenderCopy(rnd, sprites[selectedSpriteIdx].uploadedTexture, nullptr, nullptr);
+                            }
+
+                            SDL_SetRenderTarget(rnd, nullptr);
+                        }
+                    }
+                }
+                // Sprite info panel fields
                 {
                     int panelX=L.PALETTE_WIDTH, stageW=L.STAGE_WIDTH;
                     int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
@@ -955,7 +1269,6 @@ int main(int argc, char* argv[]) {
                     fields.push_back({infoX+(int)(15*L.s),infoY+fieldH2+8,fieldW2-(int)(20*L.s),fieldH2,1});
                     fields.push_back({infoX+fieldW2+(int)(15*L.s),infoY+fieldH2+8,fieldW2-(int)(20*L.s),fieldH2,2});
                     fields.push_back({infoX+(int)(30*L.s),infoY+2*(fieldH2+8),fieldW2-(int)(20*L.s),fieldH2,3});
-
                     fields.push_back({infoX+fieldW2+(int)(25*L.s),infoY+2*(fieldH2+8),fieldW2-(int)(20*L.s),fieldH2,4});
                     fields.push_back({infoX+(int)(30*L.s), infoY+3*(fieldH2+8), fieldW2-(int)(20*L.s), fieldH2, 5});
                     for (auto& fr:fields) {
@@ -963,7 +1276,7 @@ int main(int argc, char* argv[]) {
                             if(selectedSpriteIdx<(int)sprites.size()){
                                 Sprite& sp=sprites[selectedSpriteIdx];
                                 sprInfoEdit.field=fr.idx;
-                                switch(fr.idx){case 0:sprInfoEdit.buffer=sp.name;break;case 1:sprInfoEdit.buffer=floatToString(sp.x);break;case 2:sprInfoEdit.buffer=floatToString(sp.y);break;case 3:sprInfoEdit.buffer=floatToString(sp.size);break;case 4:sprInfoEdit.buffer=floatToString(sp.direction);break;}
+                                switch(fr.idx){case 0:sprInfoEdit.buffer=sp.name;break;case 1:sprInfoEdit.buffer=floatToString(sp.x);break;case 2:sprInfoEdit.buffer=floatToString(sp.y);break;case 3:sprInfoEdit.buffer=floatToString(sp.size);break;case 4:sprInfoEdit.buffer=floatToString(sp.direction);break;case 5: sprInfoEdit.buffer=floatToString(sp.ghostEffect); break;}
                                 clickedOnField=true;
                                 if(gEdit.active&&gEdit.blockId>=0){Block* eb=findBlock(blocks,gEdit.blockId);if(eb&&gEdit.fieldIndex>=0&&gEdit.fieldIndex<(int)eb->inputs.size())eb->inputs[gEdit.fieldIndex].editing=false;gEdit.active=false;}
                             }
@@ -972,7 +1285,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // ── Check block input fields ──
+                // Block input fields
                 if (!clickedOnField) {
                     for (auto& b:blocks) {
                         if(b.inPalette) continue;
@@ -992,7 +1305,6 @@ int main(int argc, char* argv[]) {
                 if (!clickedOnField) {
                     if(gEdit.active&&gEdit.blockId>=0){Block* eb=findBlock(blocks,gEdit.blockId);if(eb&&gEdit.fieldIndex>=0&&gEdit.fieldIndex<(int)eb->inputs.size())eb->inputs[gEdit.fieldIndex].editing=false;}
                     gEdit={-1,-1,-1,false,"",0};
-                    // ذخیره sprite info قبل از بستن
                     if(sprInfoEdit.field>=0&&selectedSpriteIdx<(int)sprites.size()){
                         Sprite& sp=sprites[selectedSpriteIdx];
                         switch(sprInfoEdit.field){case 0:sp.name=sprInfoEdit.buffer;break;case 1:sp.x=atof(sprInfoEdit.buffer.c_str());break;case 2:sp.y=atof(sprInfoEdit.buffer.c_str());break;case 3:sp.size=atof(sprInfoEdit.buffer.c_str());break;case 4:sp.direction=atof(sprInfoEdit.buffer.c_str());break;case 5: sp.ghostEffect = atof(sprInfoEdit.buffer.c_str()); break;}
@@ -1000,8 +1312,7 @@ int main(int argc, char* argv[]) {
                     sprInfoEdit.field=-1; sprInfoEdit.buffer.clear();
                 }
 
-                // ── Toolbar buttons ──
-                // کلیک روی دکمه BG
+                // Toolbar buttons
                 {
                     int bgBtnX = L.PALETTE_WIDTH + L.STAGE_WIDTH - (int)(35*L.s);
                     int bgBtnY = L.TOOLBAR_HEIGHT + 3;
@@ -1011,32 +1322,107 @@ int main(int argc, char* argv[]) {
                         gBgColor = (gBgColor + 1) % NUM_BG_COLORS;
                         continue;
                     }
-                    //////////////
-                    ///
-                    ///
                 }
-               ////////////////
-               ///
+
                 if (my<L.TOOLBAR_HEIGHT) {
                     int flagX=(int)(winW*0.4f),flagY=5,flagSz=L.TOOLBAR_HEIGHT-10;
                     if(mx>=flagX&&mx<=flagX+flagSz&&my>=flagY&&my<=flagY+flagSz) {
                         gIsRunning=true;
-                        gHighlightBlockId=-1;
-                    }                    int stopX=flagX+flagSz+10;
+                    }
+                    int stopX=flagX+flagSz+10;
                     if(mx>=stopX&&mx<=stopX+flagSz&&my>=flagY&&my<=flagY+flagSz) gIsRunning=false;
                     int resetX=stopX+flagSz+10;
-                    if(mx>=resetX&&mx<=resetX+(int)(60*L.s)&&my>=flagY&&my<=flagY+flagSz){resetProject(blocks,sprites);selectedSpriteIdx=0;}
+                    int resetW2=(int)(60*L.s);
+                    if(mx>=resetX&&mx<=resetX+resetW2&&my>=flagY&&my<=flagY+flagSz){resetProject(blocks,sprites);selectedSpriteIdx=0;}
+                    int timerX = resetX + resetW2 + 30;
+                    int backdropBtnX = timerX + 200;
+                    int backdropBtnW = (int)(80*L.s);
+if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my <= flagY + flagSz) {
+    gBackdropPanelOpen = !gBackdropPanelOpen;
+    continue;
+}
+
+
+
+
+
+                    int fontBtnX=resetX+resetW2+80;
+                    int fontBtnW=(int)(28*L.s);
+                    if(mx>=fontBtnX&&mx<=fontBtnX+fontBtnW&&my>=flagY&&my<=flagY+flagSz){
+                        setFontSize(gFontSizeNormal-1);
+                        L.update(winW, winH);
+                        vector<Block> kept;
+                        for(auto& b:blocks) if(!b.inPalette) kept.push_back(b);
+                        blocks = buildPaletteBlocks();
+                        for(auto& b:kept) blocks.push_back(b);
+                    }
+                    if(mx>=fontBtnX+fontBtnW+4&&mx<=fontBtnX+fontBtnW*2+4&&my>=flagY&&my<=flagY+flagSz){
+                        setFontSize(gFontSizeNormal+1);
+                        L.update(winW, winH);
+                        vector<Block> kept;
+                        for(auto& b:blocks) if(!b.inPalette) kept.push_back(b);
+                        blocks = buildPaletteBlocks();
+                        for(auto& b:kept) blocks.push_back(b);
+                    }
                     continue;
                 }
 
-                // ── Category buttons ──
+                // Category buttons
                 if (mx<L.CAT_PANEL_WIDTH&&my>L.TOOLBAR_HEIGHT) {
                     int catY=L.TOOLBAR_HEIGHT+5;
                     for(int i=0;i<NUM_CATEGORIES;i++){int btnY=catY+i*(L.CAT_BTN_HEIGHT+3);if(my>=btnY&&my<=btnY+L.CAT_BTN_HEIGHT){selectedCategory=(Category)i;paletteScrollY=0;break;}}
                     continue;
                 }
 
-                // ── Add sprite button ──
+                // Backdrop panel click handling (if edit mode is active)
+                if (gBackdropEditMode) {
+                    int panelX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
+                    int panelY = L.TOOLBAR_HEIGHT + 20;
+                    int panelW = 250, panelH = 300;
+                    if (mx >= panelX && mx <= panelX + panelW && my >= panelY && my <= panelY + panelH) {
+                        bool handled = false;
+                        int btnY = panelY + 50;
+                        for (int i = 0; i < gBackdropLibraryCount; i++) {
+                            if (mx >= panelX + 10 && mx <= panelX + panelW - 10 && my >= btnY && my <= btnY + 35) {
+                                gCurrentBackdropName = gBackdropItems[i].name;
+                                loadBackdrop(rnd, gBackdropItems[i].path);
+                                gBackdropTexture = nullptr; // TODO: load actual image
+                                handled = true;
+                                break;
+                            }
+                            btnY += 45;
+                        }
+                        if (!handled) {
+                            int uploadBtnY = btnY + 20;
+                            if (mx >= panelX + 10 && mx <= panelX + panelW - 10 && my >= uploadBtnY && my <= uploadBtnY + 35) {
+                                const char* filters[3] = { "*.png", "*.jpg", "*.jpeg" };
+                                const char* fileName = tinyfd_openFileDialog("Select Backdrop", "", 3, filters, "Image files", 0);
+                                if (fileName) {
+                                    if (gBackdropTexture) SDL_DestroyTexture(gBackdropTexture);
+                                    SDL_Surface* surf = IMG_Load(fileName);
+                                    if (surf) {
+                                        gBackdropTexture = SDL_CreateTextureFromSurface(rnd, surf);
+                                        SDL_FreeSurface(surf);
+                                        gCurrentBackdropName = fileName;
+                                    }
+                                }
+                                handled = true;
+                            }
+                            if (!handled) {
+                                int closeBtnY = uploadBtnY + 50;
+                                if (mx >= panelX + 10 && mx <= panelX + panelW - 10 && my >= closeBtnY && my <= closeBtnY + 35) {
+                                    gBackdropEditMode = false;
+                                    handled = true;
+                                }
+                            }
+                        }
+                        if (handled) {
+                            continue;
+                        }
+                    }
+                }
+
+                // Add sprite button
                 {
                     int stageRight=L.PALETTE_WIDTH+L.STAGE_WIDTH;
                     int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
@@ -1053,7 +1439,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // ── Sprite thumbnails click ──
+                // Sprite thumbnails click
                 {
                     int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
                     int thumbSz=L.SPRITE_THUMB, startX=L.PALETTE_WIDTH+5;
@@ -1064,14 +1450,12 @@ int main(int argc, char* argv[]) {
                     for(int si=0;si<(int)sprites.size();si++){
                         int tx=startX+si*(thumbSz+8), ty=spriteAreaY;
 
-                        // چک کلیک روی دکمه چشم (show/hide)
                         int eyeBtnX=tx+thumbSz-delBtnSize-eyeBtnSize-6, eyeBtnY=ty+2;
                         if(mx>=eyeBtnX&&mx<=eyeBtnX+eyeBtnSize&&my>=eyeBtnY&&my<=eyeBtnY+eyeBtnSize){
                             sprites[si].visible=!sprites[si].visible;
                             handledSprite=true; break;
                         }
 
-                        // چک کلیک روی دکمه X (حذف)
                         int delBtnX=tx+thumbSz-delBtnSize-2, delBtnY=ty+2;
                         if(mx>=delBtnX&&mx<=delBtnX+delBtnSize&&my>=delBtnY&&my<=delBtnY+delBtnSize){
                             if(sprites.size()>1){
@@ -1082,16 +1466,16 @@ int main(int argc, char* argv[]) {
                             handledSprite=true; break;
                         }
 
-                        // کلیک عادی برای انتخاب
                         if(mx>=tx&&mx<=tx+thumbSz&&my>=ty&&my<=ty+thumbSz){
                             selectedSpriteIdx=si;
                             for(int j=0;j<(int)sprites.size();j++) sprites[j].selected=(j==si);
                             handledSprite=true; break;
                         }
                     }
+                    if (handledSprite) continue;
                 }
 
-                // ── Stage sprite drag ──
+                // Stage sprite drag
                 if (!clickedOnField) {
                     int stageX=L.PALETTE_WIDTH,stageY=L.TOOLBAR_HEIGHT,stageW=L.STAGE_WIDTH,stageH=L.STAGE_HEIGHT;
                     int stageCX=stageX+stageW/2, stageCY=stageY+stageH/2;
@@ -1112,7 +1496,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // ── Block drag ──
+                // Block drag
                 if (!clickedOnField&&!draggingSprite) {
                     for(int i=(int)blocks.size()-1;i>=0;i--){
                         Block& b=blocks[i];
@@ -1134,7 +1518,9 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
+
             } // end MOUSE DOWN
+
 
             // MOUSE MOTION
             if (e.type==SDL_MOUSEMOTION) {
@@ -1146,11 +1532,37 @@ int main(int argc, char* argv[]) {
                     sprites[dragSpriteIdx].x=(float)(mx-spDragOffX-stageCX);
                     sprites[dragSpriteIdx].y=(float)(stageCY-(my-spDragOffY));
                 }
+
                 { int flagX=(int)(winW*0.4f),flagSz=L.TOOLBAR_HEIGHT-10,resetX=flagX+2*(flagSz+10); resetHovered=(mx>=resetX&&mx<=resetX+(int)(60*L.s)&&my>=5&&my<=5+flagSz); }
+                if(costumeEditMode && costumeCanvas && isDrawing) {
+                    int editorX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
+                    int editorY = L.TOOLBAR_HEIGHT + 20;
+
+                    int drawX = mx - editorX - 20;
+                    int drawY = my - editorY - 20;
+
+                    if(drawX >= 0 && drawX < canvasW && drawY >= 0 && drawY < canvasH) {
+                        SDL_SetRenderTarget(rnd, costumeCanvas);
+                        SDL_SetRenderDrawColor(rnd, penColorR, penColorG, penColorB, 255);
+
+                        if(lastDrawX >= 0 && lastDrawY >= 0) {
+                            SDL_RenderDrawLine(rnd, lastDrawX, lastDrawY, drawX, drawY);
+                        }
+
+                        SDL_SetRenderTarget(rnd, nullptr);
+                        lastDrawX = drawX;
+                        lastDrawY = drawY;
+                    }
+                }
             }
 
             // MOUSE UP
             if (e.type==SDL_MOUSEBUTTONUP&&e.button.button==SDL_BUTTON_LEFT) {
+                if(costumeEditMode) {
+                    isDrawing = false;
+                    lastDrawX = -1;
+                    lastDrawY = -1;
+                }
                 if(dragBlockId>=0){
                     Block* db=findBlock(blocks,dragBlockId);
                     if(db){
@@ -1171,20 +1583,43 @@ int main(int argc, char* argv[]) {
 
         // ── Toolbar ──
         {
+            for (int i = 0; i < winW; i += 20) {
+                Uint8 r = (Uint8)(128 + 127 * sin((i + gToolbarAnimOffset) * 0.05));
+                Uint8 g = (Uint8)(128 + 127 * sin((i + gToolbarAnimOffset) * 0.05 + 2));
+                Uint8 b = (Uint8)(128 + 127 * sin((i + gToolbarAnimOffset) * 0.05 + 4));
+                SDL_SetRenderDrawColor(rnd, r, g, b, 255);
+                SDL_Rect bar = {i, 0, 20, 3};
+                SDL_RenderFillRect(rnd, &bar);
+            }
+            gToolbarAnimOffset += 0.5f;
             SDL_SetRenderDrawColor(rnd,55,55,70,255);
             SDL_Rect toolbar={0,0,winW,L.TOOLBAR_HEIGHT}; SDL_RenderFillRect(rnd,&toolbar);
-            drawText(rnd,10,(L.TOOLBAR_HEIGHT-textHeight("Scratch IDE"))/2,"Scratch IDE",255,255,255,255);
+            drawTextTTF(rnd, 10,(L.TOOLBAR_HEIGHT-textHeightTTF())/2,"Scratch IDE",255,255,255,255);
             int flagX=(int)(winW*0.4f),flagY=5,flagSz=L.TOOLBAR_HEIGHT-10;
             fillRoundedRect(rnd,flagX,flagY,flagSz,flagSz,6,gIsRunning?0:30,gIsRunning?180:150,gIsRunning?0:30,255);
-            drawText(rnd,flagX+flagSz/4,flagY+flagSz/4,">",255,255,255,255);
+            drawTextTTF(rnd, flagX+flagSz/4,flagY+flagSz/4,">",255,255,255,255);
             int stopX=flagX+flagSz+10;
             fillRoundedRect(rnd,stopX,flagY,flagSz,flagSz,6,200,50,50,255);
-            drawText(rnd,stopX+flagSz/4,flagY+flagSz/4,"#",255,255,255,255);
+            drawTextTTF(rnd, stopX+flagSz/4,flagY+flagSz/4,"#",255,255,255,255);
             int resetX=stopX+flagSz+10, resetW=(int)(60*L.s);
             fillRoundedRect(rnd,resetX,flagY,resetW,flagSz,6,resetHovered?100:80,resetHovered?100:80,resetHovered?120:100,255);
-            drawText(rnd,resetX+5,flagY+flagSz/4,"Reset",255,255,255,255);
+            drawTextTTF(rnd, resetX+5,flagY+flagSz/4,"Reset",255,255,255,255);
+            int timerX = resetX + resetW + 30;
+            int backdropBtnX = timerX + 200;
+            int backdropBtnW = (int)(80*L.s);
+            fillRoundedRect(rnd, backdropBtnX, flagY, backdropBtnW, flagSz, 6, 50,100,150,255);
+            drawTextTTF(rnd, backdropBtnX+10, flagY+flagSz/4, "Backdrop", 255,255,255,255);
+
             char timerBuf[32]; snprintf(timerBuf,sizeof(timerBuf),"T:%.1f",gTimer);
-            drawText(rnd,resetX+resetW+15,flagY+flagSz/4,timerBuf,200,200,200,255);
+            drawTextTTF(rnd, timerX, flagY+flagSz/4, timerBuf, 200,200,200,255);
+            int fontBtnX = resetX+resetW+80;
+            int fontBtnW = (int)(28*L.s), fontBtnH = flagSz;
+            fillRoundedRect(rnd,fontBtnX,flagY,fontBtnW,fontBtnH,5,80,80,120,255);
+            drawTextTTF(rnd,fontBtnX+5,flagY+fontBtnH/4,"A-",220,220,220,255);
+            fillRoundedRect(rnd,fontBtnX+fontBtnW+4,flagY,fontBtnW,fontBtnH,5,80,80,120,255);
+            drawTextTTF(rnd,fontBtnX+fontBtnW+8,flagY+fontBtnH/4,"A+",220,220,220,255);
+            char szBuf[8]; snprintf(szBuf,sizeof(szBuf),"%d",gFontSizeNormal);
+            drawTextTTF(rnd,fontBtnX+fontBtnW*2+10,flagY+fontBtnH/4,szBuf,180,220,255,255);
         }
 
         // ── Category panel ──
@@ -1195,8 +1630,8 @@ int main(int argc, char* argv[]) {
             for(int i=0;i<NUM_CATEGORIES;i++){
                 Category c=(Category)i; SDL_Color cc=catColor(c);
                 int btnY=catY+i*(L.CAT_BTN_HEIGHT+3); bool sel=(c==selectedCategory);
-                if(sel){fillRoundedRect(rnd,3,btnY,L.CAT_PANEL_WIDTH-6,L.CAT_BTN_HEIGHT,6,cc.r,cc.g,cc.b,255);drawText(rnd,10,btnY+(L.CAT_BTN_HEIGHT-textHeight("A"))/2,catName(c),255,255,255,255);}
-                else{fillRoundedRect(rnd,3,btnY,L.CAT_PANEL_WIDTH-6,L.CAT_BTN_HEIGHT,6,60,60,75,255);drawText(rnd,10,btnY+(L.CAT_BTN_HEIGHT-textHeight("A"))/2,catName(c),cc.r,cc.g,cc.b,255);}
+                if(sel){fillRoundedRect(rnd,3,btnY,L.CAT_PANEL_WIDTH-6,L.CAT_BTN_HEIGHT,6,cc.r,cc.g,cc.b,255);drawTextTTF(rnd, 10,btnY+(L.CAT_BTN_HEIGHT-textHeightTTF())/2,catName(c),255,255,255,255);}
+                else{fillRoundedRect(rnd,3,btnY,L.CAT_PANEL_WIDTH-6,L.CAT_BTN_HEIGHT,6,60,60,75,255);drawTextTTF(rnd, 10,btnY+(L.CAT_BTN_HEIGHT-textHeightTTF())/2,catName(c),cc.r,cc.g,cc.b,255);}
             }
         }
 
@@ -1213,19 +1648,37 @@ int main(int argc, char* argv[]) {
         // ── Stage ──
         {
             int stageX=L.PALETTE_WIDTH,stageY=L.TOOLBAR_HEIGHT,stageW=L.STAGE_WIDTH,stageH=L.STAGE_HEIGHT;SDL_SetRenderDrawColor(rnd,255,255,255,255);
-            SDL_Color bgCol = BG_COLORS[gBgColor];
-            SDL_SetRenderDrawColor(rnd, bgCol.r, bgCol.g, bgCol.b, 255);
-            SDL_Rect stageRect={stageX,stageY,stageW,stageH}; SDL_RenderFillRect(rnd,&stageRect);SDL_SetRenderDrawColor(rnd,200,200,200,255); SDL_RenderDrawRect(rnd,&stageRect);
+            SDL_Rect stageRect={stageX,stageY,stageW,stageH};
+            // ─── Backdrop Texture روی Stage ───
+            if (gBackdropTexture) {
+                int tw, th;
+                SDL_QueryTexture(gBackdropTexture, nullptr, nullptr, &tw, &th);
+                SDL_Rect dst;
+                dst.x = stageX + (stageW - tw) / 2;
+                dst.y = stageY + (stageH - th) / 2;
+                dst.w = tw;
+                dst.h = th;
+                SDL_RenderCopy(rnd, gBackdropTexture, nullptr, &dst);
+            }
+
+            if (!gBackdropTexture) {
+                SDL_Color bgCol = BG_COLORS[gBgColor];
+                SDL_SetRenderDrawColor(rnd, bgCol.r, bgCol.g, bgCol.b, 255);
+                SDL_RenderFillRect(rnd, &stageRect);
+            }
+
             int bgBtnX = stageX + stageW - (int)(35*L.s);
             int bgBtnY = stageY + 3;
             int bgBtnW = (int)(32*L.s);
             int bgBtnH = (int)(18*L.s);
-            fillRoundedRect(rnd, bgBtnX, bgBtnY, bgBtnW, bgBtnH, 4, 100,100,120, 255);
-            drawText(rnd, bgBtnX+3, bgBtnY+3, "BG", 255,255,255,255);
+            static float bgPulse = 0;
+            bgPulse += 0.05f;
+            Uint8 pulseVal = (Uint8)(100 + 30 * sin(bgPulse));
+            fillRoundedRect(rnd, bgBtnX, bgBtnY, bgBtnW, bgBtnH, 4, pulseVal, pulseVal, pulseVal + 20, 255);
+            drawTextTTF(rnd, bgBtnX+3, bgBtnY+3, "BG", 255,255,255,255);
             int stageCX=stageX+stageW/2, stageCY=stageY+stageH/2;
-            SDL_SetRenderDrawColor(rnd,235,235,235,255);
-            SDL_RenderDrawLine(rnd,stageCX,stageY,stageCX,stageY+stageH);
-            SDL_RenderDrawLine(rnd,stageX,stageCY,stageX+stageW,stageCY);
+            aalineRGBA(rnd,(Sint16)stageCX,(Sint16)stageY,(Sint16)stageCX,(Sint16)(stageY+stageH),235,235,235,255);
+            aalineRGBA(rnd,(Sint16)stageX,(Sint16)stageCY,(Sint16)(stageX+stageW),(Sint16)stageCY,235,235,235,255);
 
             SDL_Rect stageClip={stageX,stageY,stageW,stageH}; SDL_RenderSetClipRect(rnd,&stageClip);
             for(int si=0;si<(int)sprites.size();si++){
@@ -1234,7 +1687,6 @@ int main(int argc, char* argv[]) {
                 int sx=stageCX+(int)sp.x, sy=stageCY-(int)sp.y;
                 int sz=(int)(30*L.s*sp.size/100.0f);
 
-                // اعمال colorEffect
                 SDL_Color drawCol = sp.color;
                 if (sp.colorEffect == 1) { drawCol = {255,100,100,255}; }
                 else if (sp.colorEffect == 2) { drawCol = {100,255,100,255}; }
@@ -1242,27 +1694,22 @@ int main(int argc, char* argv[]) {
                 else if (sp.colorEffect == 4) { drawCol = {255,255,100,255}; }
                 else if (sp.colorEffect == 5) { drawCol = {200,100,255,255}; }
 
-                // اعمال ghostEffect (شفافیت)
                 drawCol.a = (Uint8)(255 * (1.0f - sp.ghostEffect / 100.0f));
 
                 if (sp.uploadedTexture) {
-                    // رسم تصویر آپلود شده
                     SDL_Rect srcRect = {0,0,0,0};
                     SDL_QueryTexture(sp.uploadedTexture, NULL, NULL, &srcRect.w, &srcRect.h);
                     SDL_Rect dstRect = {sx-sz/2, sy-sz/2, sz, sz};
                     SDL_RenderCopy(rnd, sp.uploadedTexture, &srcRect, &dstRect);
                 } else {
-                    // رسم گربه پیش‌فرض
                     drawCatSprite(rnd,sx,sy,sz,drawCol);
-                }                // نشانگر جهت
+                }
                 float angle=(sp.direction-90)*M_PI/180.0f;
                 int arrowX=sx+(int)((sz*0.8f)*cos(angle));
                 int arrowY=sy+(int)((sz*0.8f)*sin(angle));
-                SDL_SetRenderDrawColor(rnd,0,0,0,180);
-                SDL_RenderDrawLine(rnd,sx,sy,arrowX,arrowY);
-                fillEllipse(rnd,arrowX,arrowY,(int)(3*L.s),(int)(3*L.s),0,0,0,255);
+                aalineRGBA(rnd,(Sint16)sx,(Sint16)sy,(Sint16)arrowX,(Sint16)arrowY,0,0,0,180);
+                filledEllipseRGBA(rnd,(Sint16)arrowX,(Sint16)arrowY,(Sint16)(3*L.s),(Sint16)(3*L.s),0,0,0,255);
 
-                // کادر انتخاب
                 if(si==selectedSpriteIdx){SDL_SetRenderDrawColor(rnd,50,150,255,255);SDL_Rect selR={sx-sz-3,sy-sz-3,2*sz+6,2*sz+6};SDL_RenderDrawRect(rnd,&selR);}
 
                 if(!sp.sayText.empty()) drawSpeechBubble(rnd,sx,sy-sz-5,sp.sayText.c_str(),false);
@@ -1290,33 +1737,28 @@ int main(int argc, char* argv[]) {
                 fillRoundedRect(rnd,tx,ty,thumbSz,thumbSz,6,isSel?200:240,isSel?220:240,isSel?255:240,255);
                 if(isSel){SDL_SetRenderDrawColor(rnd,50,150,255,255);SDL_Rect selBdr={tx,ty,thumbSz,thumbSz};SDL_RenderDrawRect(rnd,&selBdr);}
 
-                // اگه مخفیه، کمرنگ‌تر نشون بده
                 SDL_Color thumbCol = sprites[si].color;
                 if(!sprites[si].visible){ thumbCol.r=(Uint8)(thumbCol.r*0.4f); thumbCol.g=(Uint8)(thumbCol.g*0.4f); thumbCol.b=(Uint8)(thumbCol.b*0.4f); }
                 drawCatSprite(rnd,tx+thumbSz/2,ty+thumbSz/2,thumbSz/2-4,thumbCol);
 
-                drawText(rnd,tx+2,ty+thumbSz-textHeight("A")-2,sprites[si].name.c_str(),0,0,0,255);
+                drawTextTTF(rnd, tx+2,ty+thumbSz-textHeightTTF()-2,sprites[si].name.c_str(),0,0,0,255);
 
-                // دکمه چشم (show/hide) - سبز=نمایان، خاکستری=مخفی
                 int eyeBtnX=tx+thumbSz-delBtnSize-eyeBtnSize-6, eyeBtnY=ty+2;
                 Uint8 eyeR=sprites[si].visible?50:150, eyeG=sprites[si].visible?150:150, eyeB2=sprites[si].visible?50:150;
                 fillRoundedRect(rnd,eyeBtnX,eyeBtnY,eyeBtnSize,eyeBtnSize,4,eyeR,eyeG,eyeB2,255);
-                drawText(rnd,eyeBtnX+eyeBtnSize/4,eyeBtnY+1,"O",255,255,255,255);
+                drawTextTTF(rnd, eyeBtnX+eyeBtnSize/4,eyeBtnY+1,"O",255,255,255,255);
 
-                // دکمه X (حذف) - قرمز
                 int delBtnX=tx+thumbSz-delBtnSize-2, delBtnY=ty+2;
                 fillRoundedRect(rnd,delBtnX,delBtnY,delBtnSize,delBtnSize,4,220,50,50,255);
-                drawText(rnd,delBtnX+delBtnSize/4,delBtnY+1,"X",255,255,255,255);
+                drawTextTTF(rnd, delBtnX+delBtnSize/4,delBtnY+1,"X",255,255,255,255);
             }
 
-            // دکمه + اضافه کردن sprite
             {
                 int addBtnX=stageX+stageW-(int)(40*L.s), addBtnY=spriteAreaY, addBtnSz=(int)(30*L.s);
                 fillRoundedRect(rnd,addBtnX,addBtnY,addBtnSz,addBtnSz,8,50,150,50,255);
-                drawText(rnd,addBtnX+addBtnSz/3,addBtnY+addBtnSz/4,"+",255,255,255,255);
+                drawTextTTF(rnd, addBtnX+addBtnSz/3,addBtnY+addBtnSz/4,"+",255,255,255,255);
             }
 
-            // ── Sprite info fields ──
             if(selectedSpriteIdx<(int)sprites.size()){
                 Sprite& sp=sprites[selectedSpriteIdx];
                 int infoY=spriteAreaY+thumbSz+10, infoX=stageX+5;
@@ -1324,86 +1766,121 @@ int main(int argc, char* argv[]) {
 
                 // Name
                 {
-                    drawText(rnd,infoX,infoY+(fieldH2-textHeight("A"))/2,"Name:",80,80,80,255);
+                    drawTextTTF(rnd, infoX,infoY+(fieldH2-textHeightTTF())/2,"Name:",80,80,80,255);
                     int fx=infoX+(int)(40*L.s); bool editing=(sprInfoEdit.field==0);
                     fillRoundedRect(rnd,fx,infoY,fieldW2*2,fieldH2,4,editing?255:245,255,editing?220:245,255);
                     if(editing) drawRoundedRectOutline(rnd,fx-1,infoY-1,fieldW2*2+2,fieldH2+2,4,50,150,255,255);
                     const char* dispText=editing?sprInfoEdit.buffer.c_str():sp.name.c_str();
-                    drawText(rnd,fx+4,infoY+(fieldH2-textHeight("A"))/2,dispText,0,0,0,255);
-                    if(editing){int cw=textWidth(dispText);SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,infoY+2,fx+4+cw,infoY+fieldH2-2);}
+                    drawTextTTF(rnd, fx+4,infoY+(fieldH2-textHeightTTF())/2,dispText,0,0,0,255);
+                    if(editing){int cw=textWidthTTF(dispText);SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,infoY+2,fx+4+cw,infoY+fieldH2-2);}
                 }
 
                 int row2Y=infoY+fieldH2+8;
                 // X
                 {
-                    drawText(rnd,infoX,row2Y+(fieldH2-textHeight("A"))/2,"X:",80,80,80,255);
+                    drawTextTTF(rnd, infoX,row2Y+(fieldH2-textHeightTTF())/2,"X:",80,80,80,255);
                     int fx=infoX+(int)(15*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==1);
                     fillRoundedRect(rnd,fx,row2Y,fw,fieldH2,4,editing?255:245,255,editing?220:245,255);
                     if(editing) drawRoundedRectOutline(rnd,fx-1,row2Y-1,fw+2,fieldH2+2,4,50,150,255,255);
                     string val=editing?sprInfoEdit.buffer:floatToString(sp.x);
-                    drawText(rnd,fx+4,row2Y+(fieldH2-textHeight("A"))/2,val.c_str(),0,0,0,255);
-                    if(editing){int cw=textWidth(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row2Y+2,fx+4+cw,row2Y+fieldH2-2);}
+                    drawTextTTF(rnd, fx+4,row2Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
+                    if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row2Y+2,fx+4+cw,row2Y+fieldH2-2);}
                 }
                 // Y
                 {
                     int fx=infoX+fieldW2+(int)(15*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==2);
-                    drawText(rnd,infoX+fieldW2,row2Y+(fieldH2-textHeight("A"))/2,"Y:",80,80,80,255);
+                    drawTextTTF(rnd, infoX+fieldW2,row2Y+(fieldH2-textHeightTTF())/2,"Y:",80,80,80,255);
                     fillRoundedRect(rnd,fx,row2Y,fw,fieldH2,4,editing?255:245,255,editing?220:245,255);
                     if(editing) drawRoundedRectOutline(rnd,fx-1,row2Y-1,fw+2,fieldH2+2,4,50,150,255,255);
                     string val=editing?sprInfoEdit.buffer:floatToString(sp.y);
-                    drawText(rnd,fx+4,row2Y+(fieldH2-textHeight("A"))/2,val.c_str(),0,0,0,255);
-                    if(editing){int cw=textWidth(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row2Y+2,fx+4+cw,row2Y+fieldH2-2);}
+                    drawTextTTF(rnd, fx+4,row2Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
+                    if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row2Y+2,fx+4+cw,row2Y+fieldH2-2);}
                 }
 
                 int row3Y=row2Y+fieldH2+8;
                 // Size
                 {
-                    drawText(rnd,infoX,row3Y+(fieldH2-textHeight("A"))/2,"Sz:",80,80,80,255);
+                    drawTextTTF(rnd, infoX,row3Y+(fieldH2-textHeightTTF())/2,"Sz:",80,80,80,255);
                     int fx=infoX+(int)(30*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==3);
                     fillRoundedRect(rnd,fx,row3Y,fw,fieldH2,4,editing?255:245,255,editing?220:245,255);
                     if(editing) drawRoundedRectOutline(rnd,fx-1,row3Y-1,fw+2,fieldH2+2,4,50,150,255,255);
                     string val=editing?sprInfoEdit.buffer:floatToString(sp.size);
-                    drawText(rnd,fx+4,row3Y+(fieldH2-textHeight("A"))/2,val.c_str(),0,0,0,255);
+                    drawTextTTF(rnd, fx+4,row3Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
 
-
-                    if(editing){int cw=textWidth(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row3Y+2,fx+4+cw,row3Y+fieldH2-2);}
-                    // دکمه Upload Costume
+                    if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row3Y+2,fx+4+cw,row3Y+fieldH2-2);}
+                    // Upload button (drawn earlier, but we keep drawing here)
                     int uploadBtnW = (int)(60*L.s), uploadBtnH = fieldH2;
                     int uploadBtnX = infoX + fieldW2*2 - uploadBtnW - 10;
                     int uploadBtnY = infoY;
                     fillRoundedRect(rnd, uploadBtnX, uploadBtnY, uploadBtnW, uploadBtnH, 4, 50,150,50,255);
+                    drawTextTTF(rnd, uploadBtnX+10, uploadBtnY+(uploadBtnH-textHeightTTF())/2, "Upload", 255,255,255,255);
 
-                    drawText(rnd, uploadBtnX+10, uploadBtnY+(uploadBtnH-textHeight("A"))/2, "Upload", 255,255,255,255);
-                    // دکمه Upload Costume
-                    uploadBtnW = (int)(60*L.s), uploadBtnH = fieldH2;
-                    uploadBtnX = infoX + fieldW2*2 - uploadBtnW - 10;
-                    uploadBtnY = infoY;
-                    fillRoundedRect(rnd, uploadBtnX, uploadBtnY, uploadBtnW, uploadBtnH, 4, 50,150,50,255);
-                    drawText(rnd, uploadBtnX+10, uploadBtnY+(uploadBtnH-textHeight("A"))/2, "Upload", 255,255,255,255);
+                    int editBtnW = (int)(60*L.s), editBtnH = fieldH2;
+                    int editBtnX = uploadBtnX - editBtnW - 10;
+                    int editBtnY = uploadBtnY;
+                    fillRoundedRect(rnd, editBtnX, editBtnY, editBtnW, editBtnH, 4, 150,50,150,255);
+                    drawTextTTF(rnd, editBtnX+10, editBtnY+(editBtnH-textHeightTTF())/2, "Edit", 255,255,255,255);
+
                     int row4Y = row3Y + fieldH2 + 8;
-
                     {
-                        drawText(rnd,infoX,row4Y+(fieldH2-textHeight("A"))/2,"Gh:",80,80,80,255);
+                        drawTextTTF(rnd, infoX,row4Y+(fieldH2-textHeightTTF())/2,"Gh:",80,80,80,255);
                         int fx=infoX+(int)(30*L.s),fw=fieldW2-(int)(20*L.s);
                         bool editing=(sprInfoEdit.field==5);
                         fillRoundedRect(rnd,fx,row4Y,fw,fieldH2,4,editing?255:245,255,editing?220:245,255);
                         if(editing) drawRoundedRectOutline(rnd,fx-1,row4Y-1,fw+2,fieldH2+2,4,50,150,255,255);
                         string val=editing?sprInfoEdit.buffer:floatToString(sp.ghostEffect);
-                        drawText(rnd,fx+4,row4Y+(fieldH2-textHeight("A"))/2,val.c_str(),0,0,0,255);
-                        if(editing){int cw=textWidth(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row4Y+2,fx+4+cw,row4Y+fieldH2-2);}
+                        drawTextTTF(rnd, fx+4,row4Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
+                        if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row4Y+2,fx+4+cw,row4Y+fieldH2-2);}
                     }
                 }
+                int layerBtnW = (int)(40 * L.s), layerBtnH = fieldH2;
+                int layerBtnY = row3Y;
+
+                int frontBtnX = infoX + fieldW2 * 2 - layerBtnW - 5;
+                fillRoundedRect(rnd, frontBtnX, layerBtnY, layerBtnW, layerBtnH, 4, 50, 150, 50, 255);
+                drawTextTTF(rnd, frontBtnX + 10, layerBtnY + (layerBtnH - textHeightTTF()) / 2, ">>", 255, 255, 255, 255);
+
+                int backBtnX = frontBtnX - layerBtnW - 5;
+                fillRoundedRect(rnd, backBtnX, layerBtnY, layerBtnW, layerBtnH, 4, 200, 50, 50, 255);
+                drawTextTTF(rnd, backBtnX + 10, layerBtnY + (layerBtnH - textHeightTTF()) / 2, "<<", 255, 255, 255, 255);
                 // Direction
                 {
                     int fx=infoX+fieldW2+(int)(25*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==4);
-                    drawText(rnd,infoX+fieldW2,row3Y+(fieldH2-textHeight("A"))/2,"Dir:",80,80,80,255);
+                    drawTextTTF(rnd, infoX+fieldW2,row3Y+(fieldH2-textHeightTTF())/2,"Dir:",80,80,80,255);
                     fillRoundedRect(rnd,fx,row3Y,fw,fieldH2,4,editing?255:245,255,editing?220:245,255);
                     if(editing) drawRoundedRectOutline(rnd,fx-1,row3Y-1,fw+2,fieldH2+2,4,50,150,255,255);
                     string val=editing?sprInfoEdit.buffer:floatToString(sp.direction);
-                    drawText(rnd,fx+4,row3Y+(fieldH2-textHeight("A"))/2,val.c_str(),0,0,0,255);
-                    if(editing){int cw=textWidth(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row3Y+2,fx+4+cw,row3Y+fieldH2-2);}
+                    drawTextTTF(rnd, fx+4,row3Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
+                    if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row3Y+2,fx+4+cw,row3Y+fieldH2-2);}
                 }
             }
+        }
+        // ── Backdrop Settings Panel ──
+        if(gBackdropEditMode) {
+            int panelX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
+            int panelY = L.TOOLBAR_HEIGHT + 20;
+            int panelW = 250, panelH = 300;
+
+            SDL_SetRenderDrawColor(rnd, 60, 60, 80, 255);
+            SDL_Rect panelBg = {panelX, panelY, panelW, panelH};
+            SDL_RenderFillRect(rnd, &panelBg);
+
+            drawTextTTF(rnd, panelX+10, panelY+10, "Backdrop Settings", 255,255,255,255);
+
+            int btnY = panelY + 50;
+            for(int i=0; i<gBackdropLibraryCount; i++) {
+                fillRoundedRect(rnd, panelX+10, btnY, panelW-20, 35, 4, 80,150,80,255);
+                drawTextTTF(rnd, panelX+20, btnY+10, gBackdropItems[i].name, 255,255,255,255);
+                btnY += 45;
+            }
+
+            int uploadBtnY = btnY + 20;
+            fillRoundedRect(rnd, panelX+10, uploadBtnY, panelW-20, 35, 4, 50,100,150,255);
+            drawTextTTF(rnd, panelX+30, uploadBtnY+10, "Upload Image", 255,255,255,255);
+
+            int closeBtnY = uploadBtnY + 50;
+            fillRoundedRect(rnd, panelX+10, closeBtnY, panelW-20, 35, 4, 150,50,50,255);
+            drawTextTTF(rnd, panelX+80, closeBtnY+10, "Close", 255,255,255,255);
         }
 
         // ── Workspace ──
@@ -1415,7 +1892,42 @@ int main(int argc, char* argv[]) {
             SDL_SetRenderDrawColor(rnd,230,230,235,255);
             for(int gx=wsX;gx<wsX+wsW;gx+=40) SDL_RenderDrawLine(rnd,gx,wsY,gx,wsY+wsH);
             for(int gy=wsY;gy<wsY+wsH;gy+=40) SDL_RenderDrawLine(rnd,wsX,gy,wsX+wsW,gy);
-            drawText(rnd,wsX+10,wsY+5,"Code Workspace",150,150,160,255);
+            drawTextTTF(rnd, wsX+10,wsY+5,"Code Workspace",150,150,160,255);
+        }
+        if(costumeEditMode && costumeCanvas) {
+            int editorX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
+            int editorY = L.TOOLBAR_HEIGHT + 20;
+            int editorW = canvasW + 40;
+            int editorH = canvasH + 100;
+
+            SDL_SetRenderDrawColor(rnd, 60, 60, 80, 255);
+            SDL_Rect editorBg = {editorX, editorY, editorW, editorH};
+            SDL_RenderFillRect(rnd, &editorBg);
+
+            SDL_Rect canvasRect = {editorX+20, editorY+20, canvasW, canvasH};
+            SDL_RenderCopy(rnd, costumeCanvas, nullptr, &canvasRect);
+
+            int toolbarY = editorY + canvasH + 30;
+
+            fillRoundedRect(rnd, editorX+20, toolbarY, 60, 30, 4, 50,150,50,255);
+            drawTextTTF(rnd, editorX+30, toolbarY+5, "Pen", 255,255,255,255);
+            int colorBtnY = toolbarY + 40;
+            int colorBtnW = 25, colorBtnH = 25;
+
+            fillRoundedRect(rnd, editorX+20, colorBtnY, colorBtnW, colorBtnH, 4, 255,0,0,255);
+            fillRoundedRect(rnd, editorX+50, colorBtnY, colorBtnW, colorBtnH, 4, 0,255,0,255);
+            fillRoundedRect(rnd, editorX+80, colorBtnY, colorBtnW, colorBtnH, 4, 0,0,255,255);
+            fillRoundedRect(rnd, editorX+110, colorBtnY, colorBtnW, colorBtnH, 4, 0,0,0,255);
+            fillRoundedRect(rnd, editorX+140, colorBtnY, colorBtnW, colorBtnH, 4, 255,255,255,255);
+
+            fillRoundedRect(rnd, editorX+90, toolbarY, 60, 30, 4, 150,50,50,255);
+            drawTextTTF(rnd, editorX+100, toolbarY+5, "Erase", 255,255,255,255);
+
+            fillRoundedRect(rnd, editorX+160, toolbarY, 60, 30, 4, 50,50,150,255);
+            drawTextTTF(rnd, editorX+170, toolbarY+5, "Save", 255,255,255,255);
+
+            fillRoundedRect(rnd, editorX+230, toolbarY, 60, 30, 4, 100,100,100,255);
+            drawTextTTF(rnd, editorX+240, toolbarY+5, "Exit", 255,255,255,255);
         }
 
         // ── Draw workspace blocks ──
@@ -1436,6 +1948,7 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        renderBackdropPanel(rnd);
 
         SDL_RenderPresent(rnd);
         SDL_Delay(16);
@@ -1445,9 +1958,13 @@ int main(int argc, char* argv[]) {
     SDL_DestroyRenderer(rnd);
     SDL_DestroyWindow(window);
     IMG_Quit();
+    closeFonts();
     for(auto& sp : sprites){
         if(sp.uploadedTexture) SDL_DestroyTexture(sp.uploadedTexture);
     }
+    if(gBackdropTexture) SDL_DestroyTexture(gBackdropTexture);
+    if(costumeCanvas) SDL_DestroyTexture(costumeCanvas);
+
     SDL_Quit();
     return 0;
 }
