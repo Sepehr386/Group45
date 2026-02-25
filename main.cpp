@@ -30,10 +30,25 @@ static TTF_Font* gFontNormal = nullptr;
 static TTF_Font* gFontLarge  = nullptr;
 static int gFontSizeNormal = 13;
 static string gFontPath = "DejaVuSans.ttf";
+
 static SDL_Renderer* gRenderer = nullptr;
 static SDL_Renderer* rnd = nullptr;
 static int gHighlightBlockId = -1;
 static int activeSpriteTab = 0;
+
+struct ScriptThread {
+    int currentBlockId;
+    int spriteIdx;
+    float waitTimer;
+    bool isWaiting;
+    bool finished;
+    vector<pair<int,int>> loopStack;
+    ScriptThread(int blockId, int sprite)
+        : currentBlockId(blockId), spriteIdx(sprite),
+          waitTimer(0), isWaiting(false), finished(false) {}
+};
+
+static vector<ScriptThread> gActiveThreads;
 
 struct LayoutScale {
     float sx, sy, s;
@@ -70,16 +85,16 @@ struct LayoutScale {
         STAGE_WIDTH      = (int)(BASE_STAGE_WIDTH      * sx);
         STAGE_HEIGHT     = (int)(BASE_STAGE_HEIGHT     * sy);
         SPRITE_THUMB     = (int)(BASE_SPRITE_THUMB     * s);
-        float fontFactor = max(0.85f, s);
+        float fontFactor = max(s, 0.85f);
         BLOCK_WIDTH      = BASE_BLOCK_WIDTH  * fontFactor;
-        BLOCK_HEIGHT     = BASE_BLOCK_HEIGHT * s;
-        CBLOCK_MIN_H     = BASE_CBLOCK_MIN_H * s;
-        CBLOCK_MOUTH_H   = BASE_CBLOCK_MOUTH_H * s;
-        CBLOCK_BAR_H     = BASE_CBLOCK_BAR_H * s;
+        BLOCK_HEIGHT     = BASE_BLOCK_HEIGHT * sy;
+        CBLOCK_MIN_H     = BASE_CBLOCK_MIN_H * sy;
+        CBLOCK_MOUTH_H   = BASE_CBLOCK_MOUTH_H * sy;
+        CBLOCK_BAR_H     = BASE_CBLOCK_BAR_H * sy;
         BLOCK_CORNER_R   = BASE_BLOCK_CORNER_R * s;
         SNAP_DISTANCE    = BASE_SNAP_DISTANCE * s;
-        SNAP_VERT_OVERLAP= BASE_SNAP_VERT_OVERLAP * s;
-        fontScale        = max(10, (int)(13 * s));
+        SNAP_VERT_OVERLAP= BASE_SNAP_VERT_OVERLAP * sy;
+        fontScale        = max(1, (int)(gFontSizeNormal * s));
     }
 };
 static LayoutScale L;
@@ -87,7 +102,7 @@ static LayoutScale L;
 static void initFonts(const char* path, int baseSize) {
     gFontPath = path;
     gFontSizeNormal = baseSize;
-    if (TTF_Init() == -1) return;
+    if (TTF_Init() < 0) return;
     gFontSmall  = TTF_OpenFont(path, baseSize - 2);
     gFontNormal = TTF_OpenFont(path, baseSize);
     gFontLarge  = TTF_OpenFont(path, baseSize + 6);
@@ -107,26 +122,17 @@ static void setFontSize(int sz) {
     gFontNormal = TTF_OpenFont(gFontPath.c_str(), sz);
 }
 
-static void drawTextTTF(SDL_Renderer* r, int x, int y, const char* text,
-                         Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca,
-                         TTF_Font* font = nullptr, int maxWidth = 0)
-{
+static void drawTextTTF(SDL_Renderer* r, const char* text, int x, int y,
+                         SDL_Color col, TTF_Font* font = nullptr) {
     TTF_Font* f = font ? font : gFontNormal;
     if (!f || !text || !text[0]) return;
-    SDL_Color col = {cr, cg, cb, ca};
-    SDL_Surface* surf = nullptr;
-    if (maxWidth > 0)
-        surf = TTF_RenderUTF8_Blended_Wrapped(f, text, col, maxWidth);
-    else
-        surf = TTF_RenderUTF8_Blended(f, text, col);
+    SDL_Surface* surf = TTF_RenderUTF8_Blended(f, text, col);
     if (!surf) return;
     SDL_Texture* tex = SDL_CreateTextureFromSurface(r, surf);
     SDL_Rect dst = {x, y, surf->w, surf->h};
+    SDL_RenderCopy(r, tex, nullptr, &dst);
+    SDL_DestroyTexture(tex);
     SDL_FreeSurface(surf);
-    if (tex) {
-        SDL_RenderCopy(r, tex, nullptr, &dst);
-        SDL_DestroyTexture(tex);
-    }
 }
 
 static int textWidthTTF(const char* text, TTF_Font* font = nullptr) {
@@ -144,8 +150,7 @@ static int textHeightTTF(TTF_Font* font = nullptr) {
 }
 
 static void fillRoundedRect(SDL_Renderer* r, int x, int y, int w, int h, int rad,
-                             Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca)
-{
+                             Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca) {
     roundedBoxRGBA(r, x, y, x+w, y+h, rad, cr, cg, cb, ca);
     if (rad > 0) {
         aacircleRGBA(r, x+rad, y+rad, rad, cr, cg, cb, ca);
@@ -156,15 +161,13 @@ static void fillRoundedRect(SDL_Renderer* r, int x, int y, int w, int h, int rad
 }
 
 static void fillEllipse(SDL_Renderer* r, int cx, int cy, int rx, int ry,
-                          Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca)
-{
+                          Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca) {
     filledEllipseRGBA(r, cx, cy, rx, ry, cr, cg, cb, ca);
     aaellipseRGBA(r, cx, cy, rx, ry, cr, cg, cb, ca);
 }
 
 static void drawRoundedRectOutline(SDL_Renderer* r, int x, int y, int w, int h, int rad,
-                                     Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca)
-{
+                                     Uint8 cr, Uint8 cg, Uint8 cb, Uint8 ca) {
     roundedRectangleRGBA(r, x, y, x+w, y+h, rad, cr, cg, cb, ca);
 }
 
@@ -173,24 +176,24 @@ static const int NUM_CATEGORIES = 6;
 
 static SDL_Color catColor(Category c) {
     switch(c){
-        case Category::MOTION:    return {100,160,240,255};
-        case Category::LOOKS:     return {180,100,220,255};
-        case Category::EVENTS:    return {230,180,0,255};
-        case Category::CONTROL:   return {230,160,0,255};
-        case Category::OPERATORS: return {80,200,80,255};
-        case Category::VARIABLES: return {230,120,0,255};
+        case MOTION:    return {100,160,240,255};
+        case LOOKS:     return {180,100,220,255};
+        case EVENTS:    return {230,180,0,255};
+        case CONTROL:   return {230,160,0,255};
+        case OPERATORS: return {80,200,80,255};
+        case VARIABLES: return {230,120,0,255};
     }
     return {128,128,128,255};
 }
 
 static const char* catName(Category c) {
     switch(c){
-        case Category::MOTION:    return "Motion";
-        case Category::LOOKS:     return "Looks";
-        case Category::EVENTS:    return "Events";
-        case Category::CONTROL:   return "Control";
-        case Category::OPERATORS: return "Operators";
-        case Category::VARIABLES: return "Variables";
+        case MOTION:    return "Motion";
+        case LOOKS:     return "Looks";
+        case EVENTS:    return "Events";
+        case CONTROL:   return "Control";
+        case OPERATORS: return "Operators";
+        case VARIABLES: return "Variables";
     }
     return "?";
 }
@@ -206,7 +209,6 @@ struct Sprite {
     int currentCostume;
     SDL_Texture* uploadedTexture;
     int uploadedW, uploadedH;
-
     Sprite() : x(0), y(0), direction(90), size(100),
                visible(true), selected(false),
                color({100,160,240,255}), currentCostume(0),
@@ -268,11 +270,6 @@ static float gTimer = 0;
 static SDL_Color gBgColor = {255, 255, 255, 255};
 static float gToolbarAnimOffset = 0;
 
-static const SDL_Color BG_COLORS[] = {
-    {255,255,255,255},{230,240,255,255},{240,255,240,255},
-    {255,240,230,255},{245,245,245,255}
-};
-
 struct ActiveEdit {
     int blockId = -1;
     int inputIdx = -1;
@@ -289,36 +286,26 @@ static string floatToString(float v) {
 }
 
 static Block makeBlock(int id, Category cat, BlockShape shape, const char* text,
-                        float x, float y, float w, float h, bool inPalette)
-{
+                        float x, float y, float w, float h, bool inPalette) {
     Block b;
-    b.id = id;
-    b.cat = cat;
-    b.shape = shape;
-    b.text = text;
-    b.x = x; b.y = y;
-    b.w = w; b.h = h;
+    b.id = id; b.cat = cat; b.shape = shape; b.text = text;
+    b.x = x; b.y = y; b.w = w; b.h = h;
     b.inPalette = inPalette;
-    b.nextBlockId = -1;
-    b.parentBlockId = -1;
-    b.childHeadId = -1;
+    b.nextBlockId = -1; b.parentBlockId = -1; b.childHeadId = -1;
     return b;
 }
 
 static InputField makeInput(const char* def, float rx, float ry, float w, float h) {
     InputField f;
-    f.value = def;
-    f.defaultVal = def;
-    f.relX = rx; f.relY = ry;
-    f.width = w; f.height = h;
+    f.value = def; f.defaultVal = def;
+    f.relX = rx; f.relY = ry; f.width = w; f.height = h;
     f.editing = false;
     return f;
 }
 
 static OperatorSlot makeOpSlot(float rx, float ry, float w, float h) {
     OperatorSlot s;
-    s.relX = rx; s.relY = ry;
-    s.width = w; s.height = h;
+    s.relX = rx; s.relY = ry; s.width = w; s.height = h;
     s.embeddedBlockId = -1;
     return s;
 }
@@ -327,6 +314,23 @@ static vector<Block> gBlocks;
 static vector<Sprite> gSprites;
 static vector<vector<int>> gSpriteBlockIds;
 static Category gSelectedCat = MOTION;
+
+static Block* findBlock(int id) {
+    for (auto& b : gBlocks) if (b.id == id) return &b;
+    return nullptr;
+}
+
+static int findBlockIndex(int id) {
+    for (int i = 0; i < (int)gBlocks.size(); i++)
+        if (gBlocks[i].id == id) return i;
+    return -1;
+}
+
+static float getInputValue(Block& b, int idx) {
+    if (idx < 0 || idx >= (int)b.inputs.size()) return 0;
+    try { return stof(b.inputs[idx].value); }
+    catch (...) { return 0; }
+}
 
 static void buildPaletteBlocks() {
     gBlocks.clear();
@@ -407,11 +411,11 @@ static void buildPaletteBlocks() {
     {
         float y = py;
         {
-            Block b = makeBlock(id++, LOOKS, COMMAND, "show", px, y, bw*0.5f, bh, true);
+            Block b = makeBlock(id++, LOOKS, COMMAND, "show", px, y, bw*0.55f, bh, true);
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, LOOKS, COMMAND, "hide", px, y, bw*0.5f, bh, true);
+            Block b = makeBlock(id++, LOOKS, COMMAND, "hide", px, y, bw*0.55f, bh, true);
             gBlocks.push_back(b); y += gap;
         }
         {
@@ -425,7 +429,7 @@ static void buildPaletteBlocks() {
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, LOOKS, REPORTER, "size", px, y, bw*0.5f, bh*0.75f, true);
+            Block b = makeBlock(id++, LOOKS, REPORTER, "size", px, y, bw*0.45f, bh*0.75f, true);
             gBlocks.push_back(b); y += gap;
         }
     }
@@ -433,16 +437,16 @@ static void buildPaletteBlocks() {
     {
         float y = py;
         {
-            Block b = makeBlock(id++, EVENTS, HAT, "when green flag clicked", px, y, bw*1.1f, bh*1.1f, true);
-            gBlocks.push_back(b); y += gap;
+            Block b = makeBlock(id++, EVENTS, HAT, "when green flag clicked", px, y, bw*1.1f, bh*1.2f, true);
+            gBlocks.push_back(b); y += bh*1.2f + 6;
         }
         {
-            Block b = makeBlock(id++, EVENTS, HAT, "when space key pressed", px, y, bw*1.1f, bh*1.1f, true);
-            gBlocks.push_back(b); y += gap;
+            Block b = makeBlock(id++, EVENTS, HAT, "when space key pressed", px, y, bw*1.1f, bh*1.2f, true);
+            gBlocks.push_back(b); y += bh*1.2f + 6;
         }
         {
-            Block b = makeBlock(id++, EVENTS, HAT, "when this sprite clicked", px, y, bw*1.1f, bh*1.1f, true);
-            gBlocks.push_back(b); y += gap;
+            Block b = makeBlock(id++, EVENTS, HAT, "when this sprite clicked", px, y, bw*1.1f, bh*1.2f, true);
+            gBlocks.push_back(b); y += bh*1.2f + 6;
         }
     }
 
@@ -450,12 +454,12 @@ static void buildPaletteBlocks() {
         float y = py;
         {
             Block b = makeBlock(id++, CONTROL, COMMAND, "wait %1 secs", px, y, bw, bh, true);
-            b.inputs.push_back(makeInput("1", bw*0.32f, bh*0.15f, bw*0.20f, bh*0.7f));
+            b.inputs.push_back(makeInput("1", bw*0.35f, bh*0.15f, bw*0.22f, bh*0.7f));
             gBlocks.push_back(b); y += gap;
         }
         {
             Block b = makeBlock(id++, CONTROL, C_BLOCK, "repeat %1", px, y, bw, L.CBLOCK_MIN_H, true);
-            b.inputs.push_back(makeInput("10", bw*0.42f, bh*0.15f, bw*0.20f, bh*0.7f));
+            b.inputs.push_back(makeInput("10", bw*0.42f, bh*0.15f, bw*0.22f, bh*0.7f));
             gBlocks.push_back(b); y += L.CBLOCK_MIN_H + 6;
         }
         {
@@ -464,11 +468,11 @@ static void buildPaletteBlocks() {
         }
         {
             Block b = makeBlock(id++, CONTROL, C_BLOCK, "if %1 then", px, y, bw, L.CBLOCK_MIN_H, true);
-            b.opSlots.push_back(makeOpSlot(bw*0.18f, bh*0.15f, bw*0.40f, bh*0.7f));
+            b.opSlots.push_back(makeOpSlot(bw*0.22f, bh*0.15f, bw*0.35f, bh*0.7f));
             gBlocks.push_back(b); y += L.CBLOCK_MIN_H + 6;
         }
         {
-            Block b = makeBlock(id++, CONTROL, CAP, "stop all", px, y, bw*0.6f, bh, true);
+            Block b = makeBlock(id++, CONTROL, CAP, "stop all", px, y, bw*0.7f, bh, true);
             gBlocks.push_back(b); y += gap;
         }
     }
@@ -476,56 +480,51 @@ static void buildPaletteBlocks() {
     {
         float y = py;
         {
-            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 + %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 + %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 - %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 - %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 * %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 * %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 / %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, REPORTER, "%1 / %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, REPORTER, "pick random %1 to %2", px, y, bw*1.0f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("1", bw*0.52f, bh*0.1f, bw*0.15f, bh*0.55f));
-            b.inputs.push_back(makeInput("10", bw*0.78f, bh*0.1f, bw*0.15f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "%1 > %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "%1 > %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "%1 < %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "%1 < %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "%1 = %2", px, y, bw*0.65f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.15f, bw*0.18f, bh*0.55f));
+            b.inputs.push_back(makeInput("", bw*0.38f, bh*0.15f, bw*0.18f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "%1 = %2", px, y, bw*0.7f, bh*0.75f, true);
-            b.inputs.push_back(makeInput("", bw*0.05f, bh*0.1f, bw*0.18f, bh*0.55f));
-            b.inputs.push_back(makeInput("", bw*0.42f, bh*0.1f, bw*0.18f, bh*0.55f));
-            gBlocks.push_back(b); y += gap;
-        }
-        {
-            Block b = makeBlock(id++, OPERATORS, BOOLEAN, "not %1", px, y, bw*0.6f, bh*0.75f, true);
-            b.opSlots.push_back(makeOpSlot(bw*0.22f, bh*0.1f, bw*0.30f, bh*0.55f));
+            Block b = makeBlock(id++, OPERATORS, REPORTER, "pick random %1 to %2", px, y, bw*0.95f, bh*0.75f, true);
+            b.inputs.push_back(makeInput("1", bw*0.52f, bh*0.15f, bw*0.15f, bh*0.55f));
+            b.inputs.push_back(makeInput("10", bw*0.75f, bh*0.15f, bw*0.15f, bh*0.55f));
             gBlocks.push_back(b); y += gap;
         }
     }
@@ -533,858 +532,965 @@ static void buildPaletteBlocks() {
     {
         float y = py;
         {
-            Block b = makeBlock(id++, VARIABLES, COMMAND, "set %1 to %2", px, y, bw, bh, true);
-            b.inputs.push_back(makeInput("var", bw*0.22f, bh*0.15f, bw*0.22f, bh*0.7f));
-            b.inputs.push_back(makeInput("0", bw*0.58f, bh*0.15f, bw*0.22f, bh*0.7f));
+            Block b = makeBlock(id++, VARIABLES, COMMAND, "set myVar to %1", px, y, bw, bh, true);
+            b.inputs.push_back(makeInput("0", bw*0.62f, bh*0.15f, bw*0.22f, bh*0.7f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, VARIABLES, COMMAND, "change %1 by %2", px, y, bw, bh, true);
-            b.inputs.push_back(makeInput("var", bw*0.30f, bh*0.15f, bw*0.22f, bh*0.7f));
-            b.inputs.push_back(makeInput("1", bw*0.66f, bh*0.15f, bw*0.18f, bh*0.7f));
+            Block b = makeBlock(id++, VARIABLES, COMMAND, "change myVar by %1", px, y, bw*1.05f, bh, true);
+            b.inputs.push_back(makeInput("1", bw*0.70f, bh*0.15f, bw*0.20f, bh*0.7f));
             gBlocks.push_back(b); y += gap;
         }
         {
-            Block b = makeBlock(id++, VARIABLES, REPORTER, "var", px, y, bw*0.5f, bh*0.75f, true);
+            Block b = makeBlock(id++, VARIABLES, REPORTER, "myVar", px, y, bw*0.5f, bh*0.75f, true);
             gBlocks.push_back(b); y += gap;
         }
     }
-
-    gNextBlockId = id + 500;
 }
 
-static Block* findBlock(int id) {
-    for (auto& b : gBlocks) if (b.id == id) return &b;
-    return nullptr;
-}
-
-static Block cloneBlock(const Block& src) {
-    Block b = src;
-    b.id = gNextBlockId++;
-    b.inPalette = false;
-    b.nextBlockId = -1;
-    b.parentBlockId = -1;
-    b.childHeadId = -1;
-    for (auto& inp : b.inputs) inp.editing = false;
-    for (auto& op : b.opSlots) op.embeddedBlockId = -1;
-    return b;
-}
-
-static void detachBlock(int blockId) {
-    Block* blk = findBlock(blockId);
-    if (!blk) return;
-    int parentId = blk->parentBlockId;
-    if (parentId < 0) return;
-    Block* parent = findBlock(parentId);
-    if (!parent) { blk->parentBlockId = -1; return; }
-    if (parent->nextBlockId == blockId) {
-        parent->nextBlockId = -1;
-    }
-    if (parent->childHeadId == blockId) {
-        parent->childHeadId = -1;
-    }
-    blk->parentBlockId = -1;
-}
-
-static float chainHeight(int blockId) {
+static float computeChainHeight(int blockId) {
     float total = 0;
     int cur = blockId;
-    while (cur >= 0) {
+    while (cur != -1) {
         Block* b = findBlock(cur);
         if (!b) break;
         total += b->h;
+        if (b->shape == C_BLOCK) {
+            float mouthH = L.CBLOCK_MOUTH_H;
+            if (b->childHeadId != -1)
+                mouthH = computeChainHeight(b->childHeadId);
+            b->h = L.BLOCK_HEIGHT + mouthH + L.CBLOCK_BAR_H;
+            if (b->h < L.CBLOCK_MIN_H) b->h = L.CBLOCK_MIN_H;
+            total = total - b->h + b->h;
+        }
         cur = b->nextBlockId;
     }
     return total;
 }
 
-static void recalcCBlockHeight(Block* b) {
-    if (!b || b->shape != C_BLOCK) return;
-    float inner = 0;
-    if (b->childHeadId >= 0) {
-        inner = chainHeight(b->childHeadId);
-    }
-    float mouth = max(L.CBLOCK_MOUTH_H, inner);
-    b->h = L.CBLOCK_BAR_H + mouth + L.CBLOCK_BAR_H;
-    if (b->h < L.CBLOCK_MIN_H) b->h = L.CBLOCK_MIN_H;
-}
-
-static void repositionChain(int headId) {
+static void repositionChain(int headId, float startX, float startY) {
+    float cy = startY;
     int cur = headId;
-    while (cur >= 0) {
+    while (cur != -1) {
         Block* b = findBlock(cur);
         if (!b) break;
-        if (b->nextBlockId >= 0) {
-            Block* nxt = findBlock(b->nextBlockId);
-            if (nxt) {
-                nxt->x = b->x;
-                nxt->y = b->y + b->h - L.SNAP_VERT_OVERLAP;
+        b->x = startX;
+        b->y = cy;
+        if (b->shape == C_BLOCK) {
+            float mouthH = L.CBLOCK_MOUTH_H;
+            if (b->childHeadId != -1) {
+                mouthH = computeChainHeight(b->childHeadId);
+                repositionChain(b->childHeadId, startX + 20, cy + L.BLOCK_HEIGHT);
             }
+            b->h = L.BLOCK_HEIGHT + mouthH + L.CBLOCK_BAR_H;
+            if (b->h < L.CBLOCK_MIN_H) b->h = L.CBLOCK_MIN_H;
         }
-        if (b->shape == C_BLOCK && b->childHeadId >= 0) {
-            Block* child = findBlock(b->childHeadId);
-            if (child) {
-                child->x = b->x + 20 * L.s;
-                child->y = b->y + L.CBLOCK_BAR_H;
-            }
-            int cc = b->childHeadId;
-            while (cc >= 0) {
-                Block* cb = findBlock(cc);
-                if (!cb) break;
-                if (cb->nextBlockId >= 0) {
-                    Block* cn = findBlock(cb->nextBlockId);
-                    if (cn) {
-                        cn->x = cb->x;
-                        cn->y = cb->y + cb->h - L.SNAP_VERT_OVERLAP;
-                    }
-                }
-                cc = cb->nextBlockId;
-            }
-            recalcCBlockHeight(b);
-        }
+        cy += b->h - L.SNAP_VERT_OVERLAP;
         cur = b->nextBlockId;
     }
 }
 
-static void deleteBlock(int blockId) {
-    detachBlock(blockId);
-    Block* blk = findBlock(blockId);
-    if (blk) {
-        if (blk->nextBlockId >= 0) {
-            Block* nxt = findBlock(blk->nextBlockId);
-            if (nxt) nxt->parentBlockId = -1;
+static void detachBlock(int blockId) {
+    Block* b = findBlock(blockId);
+    if (!b) return;
+    int parentId = b->parentBlockId;
+    if (parentId == -1) return;
+    Block* parent = findBlock(parentId);
+    if (!parent) return;
+    if (parent->nextBlockId == blockId)
+        parent->nextBlockId = -1;
+    if (parent->childHeadId == blockId)
+        parent->childHeadId = -1;
+    b->parentBlockId = -1;
+}
+
+static void attachAfter(int targetId, int movingId) {
+    Block* target = findBlock(targetId);
+    Block* moving = findBlock(movingId);
+    if (!target || !moving) return;
+    int oldNext = target->nextBlockId;
+    target->nextBlockId = movingId;
+    moving->parentBlockId = targetId;
+    int last = movingId;
+    while (true) {
+        Block* lb = findBlock(last);
+        if (!lb || lb->nextBlockId == -1) break;
+        last = lb->nextBlockId;
+    }
+    if (oldNext != -1) {
+        Block* on = findBlock(oldNext);
+        if (on) {
+            Block* lb = findBlock(last);
+            if (lb) { lb->nextBlockId = oldNext; on->parentBlockId = last; }
         }
-        if (blk->childHeadId >= 0) {
-            Block* ch = findBlock(blk->childHeadId);
-            if (ch) ch->parentBlockId = -1;
+    }
+}
+
+static void attachAsChild(int cBlockId, int childId) {
+    Block* cBlock = findBlock(cBlockId);
+    Block* child = findBlock(childId);
+    if (!cBlock || !child) return;
+    cBlock->childHeadId = childId;
+    child->parentBlockId = cBlockId;
+}
+
+static int findTopOfChain(int blockId) {
+    int cur = blockId;
+    while (true) {
+        Block* b = findBlock(cur);
+        if (!b || b->parentBlockId == -1) return cur;
+        cur = b->parentBlockId;
+    }
+}
+
+static void drawBlock(SDL_Renderer* r, Block& b, bool highlight = false) {
+    SDL_Color col = catColor(b.cat);
+    int bx = (int)b.x, by = (int)b.y, bw = (int)b.w, bh = (int)b.h;
+    int rad = (int)L.BLOCK_CORNER_R;
+
+    if (b.shape == REPORTER) {
+        int rx = bw/2, ry = bh/2;
+        fillEllipse(r, bx + bw/2, by + bh/2, rx, ry, col.r, col.g, col.b, col.a);
+        if (highlight)
+            aaellipseRGBA(r, bx+bw/2, by+bh/2, rx, ry, 255, 255, 0, 255);
+    } else if (b.shape == BOOLEAN) {
+        int cx = bx + bw/2, cy = by + bh/2;
+        int hw = bw/2, hh = bh/2;
+        Sint16 vx[] = {(Sint16)(cx-hw), (Sint16)(cx-hw+hh), (Sint16)(cx+hw-hh), (Sint16)(cx+hw), (Sint16)(cx+hw-hh), (Sint16)(cx-hw+hh)};
+        Sint16 vy[] = {(Sint16)cy, (Sint16)(cy-hh), (Sint16)(cy-hh), (Sint16)cy, (Sint16)(cy+hh), (Sint16)(cy+hh)};
+        filledPolygonRGBA(r, vx, vy, 6, col.r, col.g, col.b, col.a);
+        if (highlight)
+            aapolygonRGBA(r, vx, vy, 6, 255, 255, 0, 255);
+    } else if (b.shape == HAT) {
+        fillRoundedRect(r, bx, by, bw, bh, rad, col.r, col.g, col.b, col.a);
+        filledPieRGBA(r, bx + bw/2, by, (int)(bw*0.25f), 180, 360, col.r, col.g, col.b, col.a);
+        if (highlight)
+            drawRoundedRectOutline(r, bx, by, bw, bh, rad, 255, 255, 0, 255);
+    } else if (b.shape == C_BLOCK) {
+        float topH = L.BLOCK_HEIGHT;
+        float mouthH = b.h - topH - L.CBLOCK_BAR_H;
+        if (mouthH < L.CBLOCK_MOUTH_H) mouthH = L.CBLOCK_MOUTH_H;
+        fillRoundedRect(r, bx, by, bw, (int)topH, rad, col.r, col.g, col.b, col.a);
+        fillRoundedRect(r, bx, by + (int)(topH + mouthH), bw, (int)L.CBLOCK_BAR_H, rad, col.r, col.g, col.b, col.a);
+        SDL_Rect side = {bx, by + (int)topH, 20, (int)mouthH};
+        SDL_SetRenderDrawColor(r, col.r, col.g, col.b, col.a);
+        SDL_RenderFillRect(r, &side);
+        if (highlight) {
+            drawRoundedRectOutline(r, bx, by, bw, (int)topH, rad, 255, 255, 0, 255);
+            drawRoundedRectOutline(r, bx, by+(int)(topH+mouthH), bw, (int)L.CBLOCK_BAR_H, rad, 255,255,0,255);
         }
-        for (auto& op : blk->opSlots) {
-            if (op.embeddedBlockId >= 0) {
-                Block* emb = findBlock(op.embeddedBlockId);
-                if (emb) emb->parentBlockId = -1;
-                op.embeddedBlockId = -1;
+    } else {
+        fillRoundedRect(r, bx, by, bw, bh, rad, col.r, col.g, col.b, col.a);
+        if (b.shape == CAP) {
+            Sint16 tx[] = {(Sint16)bx, (Sint16)(bx+bw), (Sint16)(bx+bw-10), (Sint16)(bx+10)};
+            Sint16 ty[] = {(Sint16)(by+bh-8), (Sint16)(by+bh-8), (Sint16)(by+bh), (Sint16)(by+bh)};
+            filledPolygonRGBA(r, tx, ty, 4, col.r, col.g, col.b, col.a);
+        }
+        if (highlight)
+            drawRoundedRectOutline(r, bx, by, bw, bh, rad, 255, 255, 0, 255);
+    }
+
+    for (auto& inp : b.inputs) {
+        int ix = bx + (int)inp.relX, iy = by + (int)inp.relY;
+        int iw = (int)inp.width, ih = (int)inp.height;
+        fillRoundedRect(r, ix, iy, iw, ih, 4, 255, 255, 255, 220);
+        if (inp.editing)
+            drawRoundedRectOutline(r, ix, iy, iw, ih, 4, 0, 120, 255, 255);
+        if (!inp.value.empty()) {
+            int tw = textWidthTTF(inp.value.c_str(), gFontSmall);
+            int tx = ix + (iw - tw)/2;
+            int ty2 = iy + (ih - textHeightTTF(gFontSmall))/2;
+            drawTextTTF(r, inp.value.c_str(), tx, ty2, {0,0,0,255}, gFontSmall);
+        }
+    }
+
+    for (auto& slot : b.opSlots) {
+        int sx2 = bx + (int)slot.relX, sy2 = by + (int)slot.relY;
+        int sw = (int)slot.width, sh = (int)slot.height;
+        int cx = sx2 + sw/2, cy = sy2 + sh/2;
+        Sint16 dx[] = {(Sint16)(cx-sw/2), (Sint16)(cx-sw/2+sh/2), (Sint16)(cx+sw/2-sh/2), (Sint16)(cx+sw/2), (Sint16)(cx+sw/2-sh/2), (Sint16)(cx-sw/2+sh/2)};
+        Sint16 dy[] = {(Sint16)cy, (Sint16)(cy-sh/2), (Sint16)(cy-sh/2), (Sint16)cy, (Sint16)(cy+sh/2), (Sint16)(cy+sh/2)};
+        filledPolygonRGBA(r, dx, dy, 6, 255, 255, 255, 180);
+    }
+
+    string label = b.text;
+    {
+        size_t pos;
+        int idx = 1;
+        while ((pos = label.find("%" + to_string(idx))) != string::npos)
+            label.replace(pos, 2, "    ");
+        idx++;
+    }
+    int textY = by + ((int)(b.shape == C_BLOCK ? L.BLOCK_HEIGHT : b.h) - textHeightTTF(gFontSmall)) / 2;
+    drawTextTTF(r, label.c_str(), bx + 8, textY, {255,255,255,255}, gFontSmall);
+}
+
+static void drawSprite(SDL_Renderer* r, Sprite& sp, int stageX, int stageY, int stageW, int stageH) {
+    if (!sp.visible) return;
+    int cx = stageX + stageW/2 + (int)sp.x;
+    int cy = stageY + stageH/2 - (int)sp.y;
+    float sc = sp.size / 100.0f;
+
+    if (sp.uploadedTexture) {
+        int dw = (int)(sp.uploadedW * sc);
+        int dh = (int)(sp.uploadedH * sc);
+        SDL_Rect dst = {cx - dw/2, cy - dh/2, dw, dh};
+        SDL_RenderCopyEx(r, sp.uploadedTexture, nullptr, &dst, sp.direction - 90, nullptr, SDL_FLIP_NONE);
+    } else {
+        int sz = (int)(30 * sc);
+        float rad = sp.direction * M_PI / 180.0f;
+        int tx = cx + (int)(sz * cos(rad - M_PI/2));
+        int ty = cy + (int)(sz * sin(rad - M_PI/2));
+        int lx = cx + (int)(sz*0.6f * cos(rad + 2.5f));
+        int ly = cy + (int)(sz*0.6f * sin(rad + 2.5f));
+        int rx2 = cx + (int)(sz*0.6f * cos(rad - 2.5f));
+        int ry2 = cy + (int)(sz*0.6f * sin(rad - 2.5f));
+        filledTrigonRGBA(r, tx, ty, lx, ly, rx2, ry2, sp.color.r, sp.color.g, sp.color.b, sp.color.a);
+        aatrigonRGBA(r, tx, ty, lx, ly, rx2, ry2, 255, 255, 255, 200);
+    }
+}
+
+// ═══════════════════════════════════════════
+//  EXECUTION ENGINE
+// ═══════════════════════════════════════════
+
+static map<string, float> gVariables;
+
+static float evaluateReporter(Block& b, int sprIdx) {
+    Sprite& sp = gSprites[sprIdx];
+    if (b.text == "x position") return sp.x;
+    if (b.text == "y position") return sp.y;
+    if (b.text == "direction")  return sp.direction;
+    if (b.text == "size")       return sp.size;
+    if (b.text == "myVar") {
+        if (gVariables.count("myVar")) return gVariables["myVar"];
+        return 0;
+    }
+    if (b.text == "%1 + %2") return getInputValue(b, 0) + getInputValue(b, 1);
+    if (b.text == "%1 - %2") return getInputValue(b, 0) - getInputValue(b, 1);
+    if (b.text == "%1 * %2") return getInputValue(b, 0) * getInputValue(b, 1);
+    if (b.text == "%1 / %2") {
+        float d = getInputValue(b, 1);
+        return (d != 0) ? getInputValue(b, 0) / d : 0;
+    }
+    if (b.text == "pick random %1 to %2") {
+        int lo = (int)getInputValue(b, 0);
+        int hi = (int)getInputValue(b, 1);
+        if (lo > hi) swap(lo, hi);
+        return (float)(lo + rand() % (hi - lo + 1));
+    }
+    return 0;
+}
+
+static bool evaluateBoolean(Block& b, int sprIdx) {
+    if (b.text == "%1 > %2") return getInputValue(b, 0) > getInputValue(b, 1);
+    if (b.text == "%1 < %2") return getInputValue(b, 0) < getInputValue(b, 1);
+    if (b.text == "%1 = %2") return fabs(getInputValue(b, 0) - getInputValue(b, 1)) < 0.001f;
+    return false;
+}
+
+static void executeBlock(ScriptThread& thread, Block& b, float dt) {
+    int si = thread.spriteIdx;
+    if (si < 0 || si >= (int)gSprites.size()) return;
+    Sprite& sp = gSprites[si];
+    string txt = b.text;
+
+    if (txt == "move %1 steps") {
+        float steps = getInputValue(b, 0);
+        float rad = sp.direction * M_PI / 180.0f;
+        sp.x += steps * cos(rad - M_PI/2);
+        sp.y += steps * sin(M_PI/2 - rad);
+    }
+    else if (txt == "turn right %1 deg") {
+        sp.direction += getInputValue(b, 0);
+    }
+    else if (txt == "turn left %1 deg") {
+        sp.direction -= getInputValue(b, 0);
+    }
+    else if (txt == "go to x:%1 y:%2") {
+        sp.x = getInputValue(b, 0);
+        sp.y = getInputValue(b, 1);
+    }
+    else if (txt == "glide %1s to x:%2 y:%3") {
+        float secs = getInputValue(b, 0);
+        if (secs <= 0) secs = 0.001f;
+        if (!thread.isWaiting) {
+            thread.isWaiting = true;
+            thread.waitTimer = secs;
+        }
+        float tx = getInputValue(b, 1);
+        float ty = getInputValue(b, 2);
+        float frac = dt / thread.waitTimer;
+        if (frac > 1) frac = 1;
+        sp.x += (tx - sp.x) * frac;
+        sp.y += (ty - sp.y) * frac;
+        thread.waitTimer -= dt;
+        if (thread.waitTimer <= 0) {
+            sp.x = tx; sp.y = ty;
+            thread.isWaiting = false;
+        } else {
+            return;
+        }
+    }
+    else if (txt == "point in dir %1") {
+        sp.direction = getInputValue(b, 0);
+    }
+    else if (txt == "change x by %1") {
+        sp.x += getInputValue(b, 0);
+    }
+    else if (txt == "set x to %1") {
+        sp.x = getInputValue(b, 0);
+    }
+    else if (txt == "change y by %1") {
+        sp.y += getInputValue(b, 0);
+    }
+    else if (txt == "set y to %1") {
+        sp.y = getInputValue(b, 0);
+    }
+    else if (txt == "show") {
+        sp.visible = true;
+    }
+    else if (txt == "hide") {
+        sp.visible = false;
+    }
+    else if (txt == "set size to %1 %") {
+        sp.size = getInputValue(b, 0);
+        if (sp.size < 1) sp.size = 1;
+    }
+    else if (txt == "change size by %1") {
+        sp.size += getInputValue(b, 0);
+        if (sp.size < 1) sp.size = 1;
+    }
+    else if (txt == "wait %1 secs") {
+        if (!thread.isWaiting) {
+            thread.isWaiting = true;
+            thread.waitTimer = getInputValue(b, 0);
+        }
+        thread.waitTimer -= dt;
+        if (thread.waitTimer <= 0) {
+            thread.isWaiting = false;
+        } else {
+            return;
+        }
+    }
+    else if (txt == "stop all") {
+        gActiveThreads.clear();
+        return;
+    }
+    else if (txt == "set myVar to %1") {
+        gVariables["myVar"] = getInputValue(b, 0);
+    }
+    else if (txt == "change myVar by %1") {
+        gVariables["myVar"] += getInputValue(b, 0);
+    }
+
+    if (b.shape == C_BLOCK) {
+        if (txt == "repeat %1") {
+            int count = (int)getInputValue(b, 0);
+            bool found = false;
+            for (auto& ls : thread.loopStack) {
+                if (ls.first == b.id) { found = true; ls.second--; break; }
+            }
+            if (!found) {
+                thread.loopStack.push_back({b.id, count});
+            }
+            int remaining = 0;
+            for (auto& ls : thread.loopStack)
+                if (ls.first == b.id) { remaining = ls.second; break; }
+
+            if (remaining > 0 && b.childHeadId != -1) {
+                thread.currentBlockId = b.childHeadId;
+                return;
+            } else {
+                for (auto it = thread.loopStack.begin(); it != thread.loopStack.end(); ++it) {
+                    if (it->first == b.id) { thread.loopStack.erase(it); break; }
+                }
+            }
+        }
+        else if (txt == "forever") {
+            if (b.childHeadId != -1) {
+                thread.currentBlockId = b.childHeadId;
+                return;
+            }
+        }
+        else if (txt == "if %1 then") {
+            bool cond = false;
+            if (!b.opSlots.empty() && b.opSlots[0].embeddedBlockId != -1) {
+                Block* eb = findBlock(b.opSlots[0].embeddedBlockId);
+                if (eb) cond = evaluateBoolean(*eb, si);
+            }
+            if (cond && b.childHeadId != -1) {
+                thread.currentBlockId = b.childHeadId;
+                return;
             }
         }
     }
-    gBlocks.erase(
-        remove_if(gBlocks.begin(), gBlocks.end(),
-                   [blockId](const Block& b){ return b.id == blockId; }),
-        gBlocks.end()
-    );
-}
 
-static void deleteChain(int blockId) {
-    Block* blk = findBlock(blockId);
-    if (!blk) return;
-    if (blk->nextBlockId >= 0) deleteChain(blk->nextBlockId);
-    if (blk->childHeadId >= 0) deleteChain(blk->childHeadId);
-    for (auto& op : blk->opSlots) {
-        if (op.embeddedBlockId >= 0) deleteChain(op.embeddedBlockId);
-    }
-    deleteBlock(blockId);
-}
-
-static void trySnap(int dragId) {
-    Block* drag = findBlock(dragId);
-    if (!drag || drag->inPalette) return;
-    float snapDist = L.SNAP_DISTANCE;
-    for (auto& target : gBlocks) {
-        if (target.id == dragId || target.inPalette) continue;
-        if (target.nextBlockId < 0 && target.shape != CAP &&
-            drag->shape != HAT && drag->shape != REPORTER && drag->shape != BOOLEAN)
-        {
-            float tx = target.x;
-            float ty = target.y + target.h - L.SNAP_VERT_OVERLAP;
-            float dx = drag->x - tx;
-            float dy = drag->y - ty;
-            if (abs(dx) < snapDist && abs(dy) < snapDist) {
-                drag->x = tx;
-                drag->y = ty;
-                target.nextBlockId = dragId;
-                drag->parentBlockId = target.id;
-                repositionChain(target.id);
-                return;
-            }
-        }
-        if (target.parentBlockId < 0 &&
-            drag->shape != REPORTER && drag->shape != BOOLEAN)
-        {
-            float tx = target.x;
-            float ty = target.y - drag->h + L.SNAP_VERT_OVERLAP;
-            float dx = drag->x - tx;
-            float dy = drag->y - ty;
-            if (abs(dx) < snapDist && abs(dy) < snapDist) {
-                drag->x = tx;
-                drag->y = ty;
-                int tail = dragId;
-                while (true) {
-                    Block* t = findBlock(tail);
-                    if (!t || t->nextBlockId < 0) break;
-                    tail = t->nextBlockId;
+    if (b.nextBlockId != -1) {
+        thread.currentBlockId = b.nextBlockId;
+    } else {
+        if (b.parentBlockId != -1) {
+            Block* parent = findBlock(b.parentBlockId);
+            if (parent && parent->shape == C_BLOCK && parent->childHeadId == b.id) {
+            } else if (parent && parent->shape == C_BLOCK) {
+                int cur = parent->childHeadId;
+                bool isLastInMouth = false;
+                while (cur != -1) {
+                    Block* cb = findBlock(cur);
+                    if (!cb) break;
+                    if (cb->nextBlockId == -1 && cur == b.id) { isLastInMouth = true; break; }
+                    cur = cb->nextBlockId;
                 }
-                Block* tailBlk = findBlock(tail);
-                if (tailBlk) {
-                    tailBlk->nextBlockId = target.id;
-                    target.parentBlockId = tail;
-                }
-                repositionChain(dragId);
-                return;
-            }
-        }
-        if (target.shape == C_BLOCK && target.childHeadId < 0) {
-            float mx = target.x + 20 * L.s;
-            float my = target.y + L.CBLOCK_BAR_H;
-            float dx = drag->x - mx;
-            float dy = drag->y - my;
-            if (abs(dx) < snapDist && abs(dy) < snapDist) {
-                drag->x = mx;
-                drag->y = my;
-                target.childHeadId = dragId;
-                drag->parentBlockId = target.id;
-                recalcCBlockHeight(&target);
-                repositionChain(target.id);
-                return;
-            }
-        }
-        if (drag->shape == REPORTER || drag->shape == BOOLEAN) {
-            for (auto& op : target.opSlots) {
-                if (op.embeddedBlockId >= 0) continue;
-                float sx = target.x + op.relX;
-                float sy = target.y + op.relY;
-                float dx = drag->x - sx;
-                float dy = drag->y - sy;
-                if (abs(dx) < snapDist && abs(dy) < snapDist) {
-                    drag->x = sx;
-                    drag->y = sy;
-                    op.embeddedBlockId = dragId;
-                    drag->parentBlockId = target.id;
+                if (isLastInMouth) {
+                    if (parent->text == "forever") {
+                        thread.currentBlockId = parent->childHeadId;
+                        return;
+                    }
+                    if (parent->text == "repeat %1") {
+                        thread.currentBlockId = parent->id;
+                        return;
+                    }
+                    if (parent->nextBlockId != -1)
+                        thread.currentBlockId = parent->nextBlockId;
+                    else
+                        thread.finished = true;
                     return;
                 }
             }
         }
+        thread.finished = true;
     }
 }
 
-static void renderBlock(SDL_Renderer* r, Block& b) {
-    SDL_Color col = catColor(b.cat);
-    int bx = (int)b.x, by = (int)b.y;
-    int bw = (int)b.w, bh = (int)b.h;
-    int rad = (int)L.BLOCK_CORNER_R;
-    bool highlighted = (b.id == gHighlightBlockId);
-    if (b.shape == REPORTER) {
-        fillEllipse(r, bx + bw/2, by + bh/2, bw/2, bh/2, col.r, col.g, col.b, col.a);
-        if (highlighted)
-            drawRoundedRectOutline(r, bx-2, by-2, bw+4, bh+4, bh/2, 255, 255, 0, 255);
-    } else if (b.shape == BOOLEAN) {
-        Sint16 vx[6] = {(Sint16)(bx+bh/2), (Sint16)(bx+bw-bh/2), (Sint16)(bx+bw),
-                         (Sint16)(bx+bw-bh/2), (Sint16)(bx+bh/2), (Sint16)bx};
-        Sint16 vy[6] = {(Sint16)by, (Sint16)by, (Sint16)(by+bh/2),
-                         (Sint16)(by+bh), (Sint16)(by+bh), (Sint16)(by+bh/2)};
-        filledPolygonRGBA(r, vx, vy, 6, col.r, col.g, col.b, col.a);
-        aapolygonRGBA(r, vx, vy, 6, col.r*0.7f, col.g*0.7f, col.b*0.7f, 255);
-        if (highlighted)
-            aapolygonRGBA(r, vx, vy, 6, 255, 255, 0, 255);
-    } else if (b.shape == HAT) {
-        fillRoundedRect(r, bx, by, bw, bh, rad+4, col.r, col.g, col.b, col.a);
-        fillRoundedRect(r, bx+10, by-8, bw-20, 16, 8, col.r, col.g, col.b, col.a);
-        if (highlighted)
-            drawRoundedRectOutline(r, bx-2, by-10, bw+4, bh+14, rad+4, 255, 255, 0, 255);
-    } else if (b.shape == C_BLOCK) {
-        float barH = L.CBLOCK_BAR_H;
-        fillRoundedRect(r, bx, by, bw, (int)barH, rad, col.r, col.g, col.b, col.a);
-        SDL_Rect leftBar = {bx, by + (int)barH, (int)(20*L.s), bh - (int)(2*barH)};
-        SDL_SetRenderDrawColor(r, col.r, col.g, col.b, col.a);
-        SDL_RenderFillRect(r, &leftBar);
-        fillRoundedRect(r, bx, by + bh - (int)barH, bw, (int)barH, rad, col.r, col.g, col.b, col.a);
-        SDL_Rect mouth = {bx + (int)(20*L.s), by + (int)barH,
-                          bw - (int)(20*L.s), bh - (int)(2*barH)};
-        SDL_SetRenderDrawColor(r, 40, 40, 50, 200);
-        SDL_RenderFillRect(r, &mouth);
-        if (highlighted)
-            drawRoundedRectOutline(r, bx-2, by-2, bw+4, bh+4, rad, 255, 255, 0, 255);
-    } else if (b.shape == CAP) {
-        fillRoundedRect(r, bx, by, bw, bh, rad, col.r, col.g, col.b, col.a);
-        SDL_Rect btm = {bx, by + bh - rad, bw, rad};
-        SDL_SetRenderDrawColor(r, col.r*0.8f, col.g*0.8f, col.b*0.8f, col.a);
-        SDL_RenderFillRect(r, &btm);
-        if (highlighted)
-            drawRoundedRectOutline(r, bx-2, by-2, bw+4, bh+4, rad, 255, 255, 0, 255);
-    } else {
-        fillRoundedRect(r, bx, by, bw, bh, rad, col.r, col.g, col.b, col.a);
-        if (highlighted)
-            drawRoundedRectOutline(r, bx-2, by-2, bw+4, bh+4, rad, 255, 255, 0, 255);
+static void runOneStep(float dt) {
+    for (int i = (int)gActiveThreads.size() - 1; i >= 0; i--) {
+        ScriptThread& t = gActiveThreads[i];
+        if (t.finished) {
+            gActiveThreads.erase(gActiveThreads.begin() + i);
+            continue;
+        }
+        if (t.currentBlockId == -1) {
+            gActiveThreads.erase(gActiveThreads.begin() + i);
+            continue;
+        }
+        Block* b = findBlock(t.currentBlockId);
+        if (!b) {
+            gActiveThreads.erase(gActiveThreads.begin() + i);
+            continue;
+        }
+        if (b->shape == HAT) {
+            if (b->nextBlockId != -1)
+                t.currentBlockId = b->nextBlockId;
+            else {
+                gActiveThreads.erase(gActiveThreads.begin() + i);
+                continue;
+            }
+            b = findBlock(t.currentBlockId);
+            if (!b) { gActiveThreads.erase(gActiveThreads.begin() + i); continue; }
+        }
+        executeBlock(t, *b, dt);
     }
-    {
-        string txt = b.text;
-        for (int i = 1; i <= 9; i++) {
-            string ph = "%" + to_string(i);
-            size_t pos = txt.find(ph);
-            if (pos != string::npos) {
-                txt.replace(pos, ph.size(), "     ");
+}
+
+static void startGreenFlag() {
+    gActiveThreads.clear();
+    for (int si = 0; si < (int)gSprites.size(); si++) {
+        if (si >= (int)gSpriteBlockIds.size()) continue;
+        for (int bid : gSpriteBlockIds[si]) {
+            Block* b = findBlock(bid);
+            if (b && b->shape == HAT && b->text == "when green flag clicked" && !b->inPalette) {
+                gActiveThreads.push_back(ScriptThread(b->id, si));
             }
         }
-        int tx = bx + 8;
-        int ty = by + (bh - textHeightTTF()) / 2;
-        if (b.shape == C_BLOCK) ty = by + ((int)L.CBLOCK_BAR_H - textHeightTTF()) / 2;
-        drawTextTTF(r, tx, ty, txt.c_str(), 255, 255, 255, 255);
     }
-    for (int i = 0; i < (int)b.inputs.size(); i++) {
-        auto& inp = b.inputs[i];
-        int ix = bx + (int)inp.relX;
-        int iy = by + (int)inp.relY;
-        int iw = (int)inp.width;
-        int ih = (int)inp.height;
-        fillRoundedRect(r, ix, iy, iw, ih, 4, 255, 255, 255, 230);
-        if (inp.editing) {
-            drawRoundedRectOutline(r, ix-1, iy-1, iw+2, ih+2, 4, 50, 150, 255, 255);
-        }
-        int tw = textWidthTTF(inp.value.c_str());
-        int ttx = ix + (iw - tw) / 2;
-        int tty = iy + (ih - textHeightTTF()) / 2;
-        drawTextTTF(r, ttx, tty, inp.value.c_str(), 40, 40, 40, 255);
-    }
-    for (auto& op : b.opSlots) {
-        if (op.embeddedBlockId < 0) {
-            int ox = bx + (int)op.relX;
-            int oy = by + (int)op.relY;
-            int ow = (int)op.width;
-            int oh = (int)op.height;
-            fillRoundedRect(r, ox, oy, ow, oh, oh/2, 60, 60, 70, 200);
+}
+
+static void startKeyPressed(const char* keyName) {
+    for (int si = 0; si < (int)gSprites.size(); si++) {
+        if (si >= (int)gSpriteBlockIds.size()) continue;
+        for (int bid : gSpriteBlockIds[si]) {
+            Block* b = findBlock(bid);
+            if (b && b->shape == HAT && b->text == "when space key pressed" && !b->inPalette) {
+                bool already = false;
+                for (auto& t : gActiveThreads)
+                    if (t.currentBlockId == b->id && t.spriteIdx == si) { already = true; break; }
+                if (!already)
+                    gActiveThreads.push_back(ScriptThread(b->id, si));
+            }
         }
     }
 }
 
-static void renderSpriteOnStage(SDL_Renderer* r, Sprite& sp, int stageX, int stageY,
-                                  int stageW, int stageH)
-{
-    if (!sp.visible) return;
-    float scaleF = sp.size / 100.0f;
-    int baseSize = (int)(40 * L.s);
-    int sw = (int)(baseSize * scaleF);
-    int sh = (int)(baseSize * scaleF);
-    int px = stageX + stageW/2 + (int)(sp.x * stageW / 480.0f) - sw/2;
-    int py = stageY + stageH/2 - (int)(sp.y * stageH / 360.0f) - sh/2;
-    if (sp.uploadedTexture) {
-        float aspect = (float)sp.uploadedW / (float)sp.uploadedH;
-        int dw = sw;
-        int dh = (int)(sw / aspect);
-        if (dh > sh) { dh = sh; dw = (int)(sh * aspect); }
-        SDL_Rect dst = {px + (sw-dw)/2, py + (sh-dh)/2, dw, dh};
-        SDL_RenderCopy(r, sp.uploadedTexture, nullptr, &dst);
-    } else {
-        fillEllipse(r, px + sw/2, py + sh/2, sw/2, sh/2,
-                    sp.color.r, sp.color.g, sp.color.b, 255);
-        char letter[2] = {sp.name[0], 0};
-        int tw = textWidthTTF(letter, gFontLarge);
-        drawTextTTF(r, px + (sw - tw)/2, py + (sh - textHeightTTF(gFontLarge))/2,
-                    letter, 255, 255, 255, 255, gFontLarge);
-    }
-    if (sp.selected) {
-        drawRoundedRectOutline(r, px-3, py-3, sw+6, sh+6, 6, 50, 150, 255, 200);
+static void startSpriteClicked(int sprIdx) {
+    if (sprIdx < 0 || sprIdx >= (int)gSpriteBlockIds.size()) return;
+    for (int bid : gSpriteBlockIds[sprIdx]) {
+        Block* b = findBlock(bid);
+        if (b && b->shape == HAT && b->text == "when this sprite clicked" && !b->inPalette) {
+            gActiveThreads.push_back(ScriptThread(b->id, sprIdx));
+        }
     }
 }
 
-static void uploadSpriteImage(Sprite& sp) {
-    const char* filters[] = {"*.png", "*.jpg", "*.jpeg", "*.bmp"};
-    const char* path = tinyfd_openFileDialog("Choose Sprite Image", "", 4, filters, "Image Files", 0);
-    if (!path) return;
-    SDL_Surface* surf = IMG_Load(path);
-    if (!surf) return;
-    if (sp.uploadedTexture) SDL_DestroyTexture(sp.uploadedTexture);
-    sp.uploadedTexture = SDL_CreateTextureFromSurface(rnd, surf);
-    sp.uploadedW = surf->w;
-    sp.uploadedH = surf->h;
-    SDL_FreeSurface(surf);
+// ═══════════════════════════════════════════
+//  DRAG & DROP STATE
+// ═══════════════════════════════════════════
+static bool gDragging = false;
+static int gDragBlockId = -1;
+static float gDragOffX = 0, gDragOffY = 0;
+static bool gDragFromPalette = false;
+
+static Block cloneBlockDeep(Block& src, bool asWorkspace) {
+    Block nb = src;
+    nb.id = gNextBlockId++;
+    nb.inPalette = false;
+    nb.nextBlockId = -1;
+    nb.parentBlockId = -1;
+    nb.childHeadId = -1;
+    for (auto& inp : nb.inputs) inp.editing = false;
+    return nb;
 }
 
+// ═══════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════
 int main(int argc, char* argv[]) {
+    srand((unsigned)time(nullptr));
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
+    TTF_Init();
     IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
-    SDL_Window* window = SDL_CreateWindow("Scratch Clone",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        BASE_WIDTH, BASE_HEIGHT,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
-    rnd = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    gRenderer = rnd;
-    L.update(BASE_WIDTH, BASE_HEIGHT);
-    initFonts(gFontPath.c_str(), L.fontScale);
-    buildPaletteBlocks();
-    gSprites.push_back(createDefaultSprite("Cat", 0, 0, {100,160,240,255}));
-    gSpriteBlockIds.push_back({});
-    int selectedSpriteIdx = 0;
-    gSprites[0].selected = true;
-    int dragBlockId = -1;
-    float dragOffX = 0, dragOffY = 0;
-    bool draggingSpriteOnStage = false;
-    int draggingSpriteIdx = -1;
-    float spriteDragOffX = 0, spriteDragOffY = 0;
-    float paletteScrollY = 0;
-    float paletteScrollTarget = 0;
-    bool showDeleteMenu = false;
-    int deleteMenuBlockId = -1;
-    int deleteMenuX = 0, deleteMenuY = 0;
-    Uint32 lastTime = SDL_GetTicks();
 
-    while (gIsRunning) {
+    SDL_Window* window = SDL_CreateWindow("Scratch Simulator",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        BASE_WIDTH, BASE_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    gRenderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    rnd = gRenderer;
+
+    int winW = BASE_WIDTH, winH = BASE_HEIGHT;
+    L.update(winW, winH);
+    initFonts("DejaVuSans.ttf", 13);
+    setFontSize(L.fontScale);
+
+    gSprites.push_back(createDefaultSprite("Sprite1", 0, 0, {100,160,240,255}));
+    gSpriteBlockIds.push_back(vector<int>());
+
+    buildPaletteBlocks();
+
+    if (!gVariables.count("myVar")) gVariables["myVar"] = 0;
+
+    bool running = true;
+    Uint32 lastTick = SDL_GetTicks();
+    float paletteScrollY = 0;
+
+    while (running) {
         Uint32 now = SDL_GetTicks();
-        float dt = (now - lastTime) / 1000.0f;
-        lastTime = now;
+        float dt = (now - lastTick) / 1000.0f;
+        lastTick = now;
         gTimer += dt;
+
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) {
-                gIsRunning = false;
-            }
-            else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                L.update(e.window.data1, e.window.data2);
+            if (e.type == SDL_QUIT) running = false;
+
+            if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                winW = e.window.data1; winH = e.window.data2;
+                L.update(winW, winH);
                 setFontSize(L.fontScale);
                 buildPaletteBlocks();
             }
-            else if (e.type == SDL_MOUSEWHEEL) {
-                int mx, my;
-                SDL_GetMouseState(&mx, &my);
-                int palX = L.CAT_PANEL_WIDTH;
-                int palW = L.PALETTE_WIDTH - L.CAT_PANEL_WIDTH;
-                int palY = L.TOOLBAR_HEIGHT;
-                int palH = L.winH - L.TOOLBAR_HEIGHT;
-                if (mx >= palX && mx < palX + palW && my >= palY && my < palY + palH) {
-                    paletteScrollTarget -= e.wheel.y * 30;
-                    if (paletteScrollTarget < 0) paletteScrollTarget = 0;
+
+            if (e.type == SDL_MOUSEWHEEL) {
+                int mx, my; SDL_GetMouseState(&mx, &my);
+                if (mx < L.PALETTE_WIDTH && my > L.TOOLBAR_HEIGHT) {
+                    paletteScrollY += e.wheel.y * 20;
+                    if (paletteScrollY > 0) paletteScrollY = 0;
                 }
             }
-            else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 int mx = e.button.x, my = e.button.y;
-                showDeleteMenu = false;
-                int catY = L.TOOLBAR_HEIGHT;
-                for (int i = 0; i < NUM_CATEGORIES; i++) {
-                    int btnY = catY + i * L.CAT_BTN_HEIGHT;
-                    if (mx < L.CAT_PANEL_WIDTH && my >= btnY && my < btnY + L.CAT_BTN_HEIGHT) {
-                        gSelectedCat = (Category)i;
-                        paletteScrollY = 0;
-                        paletteScrollTarget = 0;
-                    }
+
+                int stageX = winW - L.STAGE_WIDTH;
+                int stageY = L.TOOLBAR_HEIGHT;
+                int flagBtnX = stageX + L.STAGE_WIDTH - 80;
+                int flagBtnY = stageY + L.STAGE_HEIGHT + 5;
+                if (mx >= flagBtnX && mx <= flagBtnX + 35 && my >= flagBtnY && my <= flagBtnY + 30) {
+                    startGreenFlag();
                 }
-                if (my < L.TOOLBAR_HEIGHT) {
-                    int addBtnX = L.winW - L.STAGE_WIDTH + 5;
-                    int addBtnW = (int)(100 * L.s);
-                    int addBtnH = L.TOOLBAR_HEIGHT - 8;
-                    if (mx >= addBtnX && mx < addBtnX + addBtnW && my >= 4 && my < 4 + addBtnH) {
-                        string nm = "Sprite" + to_string(gNextSpriteNum++);
-                        SDL_Color colors[] = {{240,100,100,255},{100,220,100,255},
-                                              {220,180,60,255},{180,100,220,255}};
-                        SDL_Color c = colors[gSprites.size() % 4];
-                        gSprites.push_back(createDefaultSprite(nm.c_str(),
-                            (gSprites.size() * 40) % 200 - 100,
-                            (gSprites.size() * 30) % 150 - 75, c));
-                        gSpriteBlockIds.push_back({});
-                        for (auto& s : gSprites) s.selected = false;
-                        gSprites.back().selected = true;
-                        selectedSpriteIdx = gSprites.size() - 1;
-                    }
+
+                int stopBtnX = flagBtnX + 40;
+                if (mx >= stopBtnX && mx <= stopBtnX + 35 && my >= flagBtnY && my <= flagBtnY + 30) {
+                    gActiveThreads.clear();
                 }
-                {
-                    int stageX = L.winW - L.STAGE_WIDTH;
-                    int thumbY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
-                    int thumbSize = L.SPRITE_THUMB;
-                    for (int i = 0; i < (int)gSprites.size(); i++) {
-                        int tx = stageX + 10 + i * (thumbSize + 8);
-                        if (mx >= tx && mx < tx + thumbSize && my >= thumbY && my < thumbY + thumbSize) {
-                            for (auto& s : gSprites) s.selected = false;
-                            gSprites[i].selected = true;
-                            selectedSpriteIdx = i;
-                        }
-                    }
-                    int uploadBtnY = thumbY + thumbSize + 8;
-                    int uploadBtnW = (int)(100 * L.s);
-                    int uploadBtnH = (int)(28 * L.s);
-                    int uploadBtnX = stageX + 10;
-                    if (mx >= uploadBtnX && mx < uploadBtnX + uploadBtnW &&
-                        my >= uploadBtnY && my < uploadBtnY + uploadBtnH) {
-                        if (selectedSpriteIdx >= 0 && selectedSpriteIdx < (int)gSprites.size()) {
-                            uploadSpriteImage(gSprites[selectedSpriteIdx]);
+
+                int sprListY = stageY + L.STAGE_HEIGHT + 45;
+                int addBtnX = stageX + 5;
+                int addBtnY = sprListY;
+                int addBtnW = 60, addBtnH = 30;
+                if (mx >= addBtnX && mx <= addBtnX+addBtnW && my >= addBtnY && my <= addBtnY+addBtnH) {
+                    string nm = "Sprite" + to_string(gNextSpriteNum++);
+                    SDL_Color cols[] = {{240,100,100,255},{100,240,100,255},{240,240,100,255},{200,100,240,255}};
+                    gSprites.push_back(createDefaultSprite(nm.c_str(),
+                        (float)(rand()%200-100), (float)(rand()%150-75),
+                        cols[gSprites.size() % 4]));
+                    gSpriteBlockIds.push_back(vector<int>());
+                    activeSpriteTab = (int)gSprites.size() - 1;
+                }
+
+                int uploadBtnX = addBtnX + addBtnW + 10;
+                if (mx >= uploadBtnX && mx <= uploadBtnX+80 && my >= addBtnY && my <= addBtnY+addBtnH) {
+                    const char* filters[] = {"*.png","*.jpg","*.bmp"};
+                    const char* file = tinyfd_openFileDialog("Upload Costume", "", 3, filters, "Images", 0);
+                    if (file && activeSpriteTab >= 0 && activeSpriteTab < (int)gSprites.size()) {
+                        SDL_Surface* surf = IMG_Load(file);
+                        if (surf) {
+                            if (gSprites[activeSpriteTab].uploadedTexture)
+                                SDL_DestroyTexture(gSprites[activeSpriteTab].uploadedTexture);
+                            gSprites[activeSpriteTab].uploadedTexture = SDL_CreateTextureFromSurface(gRenderer, surf);
+                            gSprites[activeSpriteTab].uploadedW = surf->w;
+                            gSprites[activeSpriteTab].uploadedH = surf->h;
+                            SDL_FreeSurface(surf);
                         }
                     }
                 }
-                {
-                    int stageX = L.winW - L.STAGE_WIDTH;
-                    int stageY = L.TOOLBAR_HEIGHT;
-                    int stageW = L.STAGE_WIDTH;
-                    int stageH = L.STAGE_HEIGHT;
-                    if (mx >= stageX && mx < stageX + stageW && my >= stageY && my < stageY + stageH) {
-                        for (int i = (int)gSprites.size()-1; i >= 0; i--) {
-                            Sprite& sp = gSprites[i];
-                            if (!sp.visible) continue;
-                            float scaleF = sp.size / 100.0f;
-                            int baseSize = (int)(40 * L.s);
-                            int sw = (int)(baseSize * scaleF);
-                            int sh = (int)(baseSize * scaleF);
-                            int px = stageX + stageW/2 + (int)(sp.x * stageW / 480.0f) - sw/2;
-                            int py = stageY + stageH/2 - (int)(sp.y * stageH / 360.0f) - sh/2;
-                            if (mx >= px && mx < px+sw && my >= py && my < py+sh) {
-                                draggingSpriteOnStage = true;
-                                draggingSpriteIdx = i;
-                                spriteDragOffX = sp.x - (mx - stageX - stageW/2) * 480.0f / stageW;
-                                spriteDragOffY = sp.y + (my - stageY - stageH/2) * 360.0f / stageH;
-                                for (auto& s : gSprites) s.selected = false;
-                                sp.selected = true;
-                                selectedSpriteIdx = i;
-                                break;
-                            }
-                        }
+
+                for (int i = 0; i < (int)gSprites.size(); i++) {
+                    int tx = stageX + 5 + i * (L.SPRITE_THUMB + 10);
+                    int ty = sprListY + 40;
+                    if (mx >= tx && mx <= tx + L.SPRITE_THUMB && my >= ty && my <= ty + L.SPRITE_THUMB) {
+                        activeSpriteTab = i;
                     }
                 }
-                {
-                    int palX = L.CAT_PANEL_WIDTH;
-                    int palW = L.PALETTE_WIDTH - L.CAT_PANEL_WIDTH;
-                    int palYtop = L.TOOLBAR_HEIGHT;
-                    int workX = L.PALETTE_WIDTH;
-                    int workW = L.winW - L.PALETTE_WIDTH - L.STAGE_WIDTH;
-                    bool clickedInput = false;
-                    for (auto& b : gBlocks) {
-                        if (b.inPalette) continue;
-                        for (int ii = 0; ii < (int)b.inputs.size(); ii++) {
-                            auto& inp = b.inputs[ii];
-                            int ix = (int)(b.x + inp.relX);
-                            int iy = (int)(b.y + inp.relY);
-                            if (mx >= ix && mx < ix + (int)inp.width &&
-                                my >= iy && my < iy + (int)inp.height)
-                            {
-                                if (gActiveEdit.blockId >= 0) {
-                                    Block* prev = findBlock(gActiveEdit.blockId);
-                                    if (prev && gActiveEdit.inputIdx < (int)prev->inputs.size())
-                                        prev->inputs[gActiveEdit.inputIdx].editing = false;
+
+                int cx = stageX + L.STAGE_WIDTH/2;
+                int cy2 = stageY + L.STAGE_HEIGHT/2;
+                for (int si = 0; si < (int)gSprites.size(); si++) {
+                    Sprite& sp = gSprites[si];
+                    if (!sp.visible) continue;
+                    int sx2 = cx + (int)sp.x;
+                    int sy2 = cy2 - (int)sp.y;
+                    int sz = (int)(30 * sp.size / 100.0f);
+                    if (abs(mx - sx2) < sz && abs(my - sy2) < sz) {
+                        startSpriteClicked(si);
+                    }
+                }
+
+                if (gActiveEdit.blockId != -1) {
+                    Block* eb = findBlock(gActiveEdit.blockId);
+                    if (eb && gActiveEdit.inputIdx < (int)eb->inputs.size())
+                        eb->inputs[gActiveEdit.inputIdx].editing = false;
+                    gActiveEdit.blockId = -1;
+                    gActiveEdit.inputIdx = -1;
+                }
+
+                for (int i = (int)gBlocks.size()-1; i >= 0; i--) {
+                    Block& b = gBlocks[i];
+                    bool inPaletteArea = (mx < L.PALETTE_WIDTH && my > L.TOOLBAR_HEIGHT);
+                    if (b.inPalette && !inPaletteArea) continue;
+                    if (b.inPalette && b.cat != gSelectedCat) continue;
+
+                    float bx = b.x, by = b.y;
+                    if (b.inPalette) by += paletteScrollY;
+
+                    if (mx >= bx && mx <= bx + b.w && my >= by && my <= by + b.h) {
+                        bool clickedInput = false;
+                        for (int j = 0; j < (int)b.inputs.size(); j++) {
+                            auto& inp = b.inputs[j];
+                            int ix = (int)(bx + inp.relX);
+                            int iy = (int)(by + inp.relY);
+                            if (mx >= ix && mx <= ix + (int)inp.width && my >= iy && my <= iy + (int)inp.height) {
+                                if (!b.inPalette) {
+                                    inp.editing = true;
+                                    gActiveEdit.blockId = b.id;
+                                    gActiveEdit.inputIdx = j;
+                                    clickedInput = true;
                                 }
-                                gActiveEdit.blockId = b.id;
-                                gActiveEdit.inputIdx = ii;
-                                inp.editing = true;
-                                SDL_StartTextInput();
-                                clickedInput = true;
                                 break;
                             }
                         }
                         if (clickedInput) break;
-                    }
-                    if (!clickedInput) {
-                        if (gActiveEdit.blockId >= 0) {
-                            Block* prev = findBlock(gActiveEdit.blockId);
-                            if (prev && gActiveEdit.inputIdx < (int)prev->inputs.size())
-                                prev->inputs[gActiveEdit.inputIdx].editing = false;
-                            gActiveEdit.blockId = -1;
-                            gActiveEdit.inputIdx = -1;
-                            SDL_StopTextInput();
-                        }
-                        for (int i = (int)gBlocks.size()-1; i >= 0; i--) {
-                            Block& b = gBlocks[i];
-                            int bx = (int)b.x, by = (int)b.y;
-                            int checkY = by;
-                            if (b.inPalette) checkY = by - (int)paletteScrollY + palYtop;
-                            if (b.inPalette && b.cat != gSelectedCat) continue;
-                            int bw = (int)b.w, bh = (int)b.h;
-                            int drawX = b.inPalette ? palX + (int)b.x : bx;
-                            int drawY = b.inPalette ? checkY : by;
-                            if (mx >= drawX && mx < drawX + bw && my >= drawY && my < drawY + bh) {
-                                if (b.inPalette) {
-                                    Block nb = cloneBlock(b);
-                                    nb.x = mx - bw/2;
-                                    nb.y = my - bh/2;
-                                    gBlocks.push_back(nb);
-                                    dragBlockId = nb.id;
-                                    dragOffX = bw/2;
-                                    dragOffY = bh/2;
-                                    if (selectedSpriteIdx >= 0 && selectedSpriteIdx < (int)gSpriteBlockIds.size())
-                                        gSpriteBlockIds[selectedSpriteIdx].push_back(nb.id);
-                                } else {
-                                    detachBlock(b.id);
-                                    dragBlockId = b.id;
-                                    dragOffX = mx - bx;
-                                    dragOffY = my - by;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
-                int mx = e.button.x, my = e.button.y;
-                for (int i = (int)gBlocks.size()-1; i >= 0; i--) {
-                    Block& b = gBlocks[i];
-                    if (b.inPalette) continue;
-                    if (mx >= (int)b.x && mx < (int)(b.x+b.w) &&
-                        my >= (int)b.y && my < (int)(b.y+b.h))
-                    {
-                        showDeleteMenu = true;
-                        deleteMenuBlockId = b.id;
-                        deleteMenuX = mx;
-                        deleteMenuY = my;
-                        break;
-                    }
-                }
-            }
-            else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
-                if (dragBlockId >= 0) {
-                    Block* db = findBlock(dragBlockId);
-                    if (db) {
-                        if (db->x < L.PALETTE_WIDTH) {
-                            for (auto& sbids : gSpriteBlockIds) {
-                                sbids.erase(remove(sbids.begin(), sbids.end(), dragBlockId), sbids.end());
-                            }
-                            deleteChain(dragBlockId);
+
+                        if (b.inPalette) {
+                            Block nb = cloneBlockDeep(b, true);
+                            nb.x = mx - nb.w/2;
+                            nb.y = my - nb.h/2;
+                            gBlocks.push_back(nb);
+                            gDragBlockId = nb.id;
+                            gDragging = true;
+                            gDragFromPalette = true;
+                            gDragOffX = nb.w/2;
+                            gDragOffY = nb.h/2;
                         } else {
-                            trySnap(dragBlockId);
+                            detachBlock(b.id);
+                            gDragBlockId = b.id;
+                            gDragging = true;
+                            gDragFromPalette = false;
+                            gDragOffX = mx - b.x;
+                            gDragOffY = my - b.y;
                         }
+                        break;
                     }
-                    dragBlockId = -1;
                 }
-                draggingSpriteOnStage = false;
-                draggingSpriteIdx = -1;
+
+                int catPanelX = 0;
+                int catPanelY = L.TOOLBAR_HEIGHT;
+                for (int c = 0; c < NUM_CATEGORIES; c++) {
+                    int btnY = catPanelY + c * L.CAT_BTN_HEIGHT;
+                    if (mx >= catPanelX && mx <= catPanelX + L.CAT_PANEL_WIDTH &&
+                        my >= btnY && my <= btnY + L.CAT_BTN_HEIGHT) {
+                        gSelectedCat = (Category)c;
+                    }
+                }
             }
-            else if (e.type == SDL_MOUSEMOTION) {
-                int mx = e.motion.x, my = e.motion.y;
-                if (dragBlockId >= 0) {
-                    Block* db = findBlock(dragBlockId);
-                    if (db) {
-                        db->x = mx - dragOffX;
-                        db->y = my - dragOffY;
-                        repositionChain(dragBlockId);
-                    }
-                }
-                if (draggingSpriteOnStage && draggingSpriteIdx >= 0) {
-                    int stageX = L.winW - L.STAGE_WIDTH;
-                    int stageW = L.STAGE_WIDTH;
-                    int stageY = L.TOOLBAR_HEIGHT;
-                    int stageH = L.STAGE_HEIGHT;
-                    gSprites[draggingSpriteIdx].x = (mx - stageX - stageW/2) * 480.0f / stageW + spriteDragOffX;
-                    gSprites[draggingSpriteIdx].y = -(my - stageY - stageH/2) * 360.0f / stageH + spriteDragOffY;
-                }
-                gHighlightBlockId = -1;
+
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
+                int mx = e.button.x, my = e.button.y;
                 for (int i = (int)gBlocks.size()-1; i >= 0; i--) {
                     Block& b = gBlocks[i];
                     if (b.inPalette) continue;
-                    if (mx >= (int)b.x && mx < (int)(b.x+b.w) &&
-                        my >= (int)b.y && my < (int)(b.y+b.h)) {
-                        gHighlightBlockId = b.id;
+                    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+                        detachBlock(b.id);
+                        if (activeSpriteTab >= 0 && activeSpriteTab < (int)gSpriteBlockIds.size()) {
+                            auto& ids = gSpriteBlockIds[activeSpriteTab];
+                            ids.erase(remove(ids.begin(), ids.end(), b.id), ids.end());
+                        }
+                        gBlocks.erase(gBlocks.begin() + i);
                         break;
                     }
                 }
             }
-            else if (e.type == SDL_TEXTINPUT) {
-                if (gActiveEdit.blockId >= 0) {
-                    Block* b = findBlock(gActiveEdit.blockId);
-                    if (b && gActiveEdit.inputIdx < (int)b->inputs.size()) {
-                        b->inputs[gActiveEdit.inputIdx].value += e.text.text;
-                    }
+
+            if (e.type == SDL_MOUSEMOTION && gDragging) {
+                Block* b = findBlock(gDragBlockId);
+                if (b) {
+                    b->x = e.motion.x - gDragOffX;
+                    b->y = e.motion.y - gDragOffY;
                 }
             }
-            else if (e.type == SDL_KEYDOWN) {
-                if (gActiveEdit.blockId >= 0) {
-                    Block* b = findBlock(gActiveEdit.blockId);
-                    if (b && gActiveEdit.inputIdx < (int)b->inputs.size()) {
-                        auto& val = b->inputs[gActiveEdit.inputIdx].value;
-                        if (e.key.keysym.sym == SDLK_BACKSPACE && !val.empty()) {
-                            val.pop_back();
-                        } else if (e.key.keysym.sym == SDLK_RETURN) {
-                            b->inputs[gActiveEdit.inputIdx].editing = false;
-                            gActiveEdit.blockId = -1;
-                            gActiveEdit.inputIdx = -1;
-                            SDL_StopTextInput();
+
+            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT && gDragging) {
+                gDragging = false;
+                Block* moving = findBlock(gDragBlockId);
+                if (moving) {
+                    if (moving->x < L.PALETTE_WIDTH) {
+                        if (activeSpriteTab >= 0 && activeSpriteTab < (int)gSpriteBlockIds.size()) {
+                            auto& ids = gSpriteBlockIds[activeSpriteTab];
+                            ids.erase(remove(ids.begin(), ids.end(), moving->id), ids.end());
+                        }
+                        int idx = findBlockIndex(gDragBlockId);
+                        if (idx >= 0) gBlocks.erase(gBlocks.begin() + idx);
+                    } else {
+                        bool snapped = false;
+                        for (auto& target : gBlocks) {
+                            if (target.id == moving->id || target.inPalette) continue;
+                            if (target.shape == C_BLOCK) {
+                                float mouthX = target.x + 20;
+                                float mouthY = target.y + L.BLOCK_HEIGHT;
+                                if (target.childHeadId == -1 &&
+                                    fabs(moving->x - mouthX) < L.SNAP_DISTANCE &&
+                                    fabs(moving->y - mouthY) < L.SNAP_DISTANCE) {
+                                    attachAsChild(target.id, moving->id);
+                                    int top = findTopOfChain(target.id);
+                                    Block* tb = findBlock(top);
+                                    if (tb) repositionChain(top, tb->x, tb->y);
+                                    snapped = true;
+                                    break;
+                                }
+                            }
+                            float snapY = target.y + target.h - L.SNAP_VERT_OVERLAP;
+                            if (fabs(moving->x - target.x) < L.SNAP_DISTANCE &&
+                                fabs(moving->y - snapY) < L.SNAP_DISTANCE) {
+                                if (target.shape != REPORTER && target.shape != BOOLEAN) {
+                                    attachAfter(target.id, moving->id);
+                                    int top = findTopOfChain(target.id);
+                                    Block* tb = findBlock(top);
+                                    if (tb) repositionChain(top, tb->x, tb->y);
+                                    snapped = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (activeSpriteTab >= 0 && activeSpriteTab < (int)gSpriteBlockIds.size()) {
+                            auto& ids = gSpriteBlockIds[activeSpriteTab];
+                            if (find(ids.begin(), ids.end(), moving->id) == ids.end())
+                                ids.push_back(moving->id);
                         }
                     }
                 }
-                if (e.key.keysym.sym == SDLK_DELETE && gHighlightBlockId >= 0) {
-                    for (auto& sbids : gSpriteBlockIds)
-                        sbids.erase(remove(sbids.begin(), sbids.end(), gHighlightBlockId), sbids.end());
-                    deleteChain(gHighlightBlockId);
-                    gHighlightBlockId = -1;
+                gDragBlockId = -1;
+            }
+
+            if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.sym == SDLK_SPACE)
+                    startKeyPressed("space");
+
+                if (gActiveEdit.blockId != -1) {
+                    Block* eb = findBlock(gActiveEdit.blockId);
+                    if (eb && gActiveEdit.inputIdx < (int)eb->inputs.size()) {
+                        auto& inp = eb->inputs[gActiveEdit.inputIdx];
+                        if (e.key.keysym.sym == SDLK_BACKSPACE && !inp.value.empty())
+                            inp.value.pop_back();
+                        else if (e.key.keysym.sym == SDLK_RETURN) {
+                            inp.editing = false;
+                            gActiveEdit.blockId = -1;
+                            gActiveEdit.inputIdx = -1;
+                        }
+                    }
                 }
             }
-            if (showDeleteMenu && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                int mx = e.button.x, my = e.button.y;
-                int menuW = (int)(120 * L.s), menuH = (int)(30 * L.s);
-                if (mx >= deleteMenuX && mx < deleteMenuX + menuW &&
-                    my >= deleteMenuY && my < deleteMenuY + menuH)
-                {
-                    for (auto& sbids : gSpriteBlockIds)
-                        sbids.erase(remove(sbids.begin(), sbids.end(), deleteMenuBlockId), sbids.end());
-                    deleteChain(deleteMenuBlockId);
+
+            if (e.type == SDL_TEXTINPUT) {
+                if (gActiveEdit.blockId != -1) {
+                    Block* eb = findBlock(gActiveEdit.blockId);
+                    if (eb && gActiveEdit.inputIdx < (int)eb->inputs.size()) {
+                        eb->inputs[gActiveEdit.inputIdx].value += e.text.text;
+                    }
                 }
-                showDeleteMenu = false;
             }
         }
-        paletteScrollY += (paletteScrollTarget - paletteScrollY) * min(1.0f, dt * 12.0f);
+
+        runOneStep(dt);
+
         SDL_SetRenderDrawColor(rnd, gBgColor.r, gBgColor.g, gBgColor.b, 255);
         SDL_RenderClear(rnd);
-        fillRoundedRect(rnd, 0, 0, L.winW, L.TOOLBAR_HEIGHT, 0, 50, 50, 60, 255);
-        drawTextTTF(rnd, 10, (L.TOOLBAR_HEIGHT - textHeightTTF(gFontLarge))/2,
-                    "Scratch Clone", 255, 255, 255, 255, gFontLarge);
+
         {
-            int addBtnX = L.winW - L.STAGE_WIDTH + 5;
-            int addBtnW = (int)(100 * L.s);
-            int addBtnH = L.TOOLBAR_HEIGHT - 8;
-            fillRoundedRect(rnd, addBtnX, 4, addBtnW, addBtnH, 6, 80, 180, 80, 255);
-            int tw = textWidthTTF("+ Sprite");
-            drawTextTTF(rnd, addBtnX + (addBtnW-tw)/2, 4 + (addBtnH-textHeightTTF())/2,
-                        "+ Sprite", 255, 255, 255, 255);
+            SDL_Rect toolbar = {0, 0, winW, L.TOOLBAR_HEIGHT};
+            SDL_SetRenderDrawColor(rnd, 60, 60, 100, 255);
+            SDL_RenderFillRect(rnd, &toolbar);
+            drawTextTTF(rnd, "Scratch Simulator", 15, (L.TOOLBAR_HEIGHT - textHeightTTF(gFontLarge))/2,
+                        {255,255,255,255}, gFontLarge);
         }
+
         {
-            SDL_Rect catPanel = {0, L.TOOLBAR_HEIGHT, L.CAT_PANEL_WIDTH, L.winH - L.TOOLBAR_HEIGHT};
-            SDL_SetRenderDrawColor(rnd, 55, 55, 65, 255);
-            SDL_RenderFillRect(rnd, &catPanel);
-            for (int i = 0; i < NUM_CATEGORIES; i++) {
-                Category c = (Category)i;
-                SDL_Color cc = catColor(c);
-                int btnY = L.TOOLBAR_HEIGHT + i * L.CAT_BTN_HEIGHT;
-                bool active = (c == gSelectedCat);
-                fillRoundedRect(rnd, 2, btnY+1, L.CAT_PANEL_WIDTH-4, L.CAT_BTN_HEIGHT-2, 4,
-                    active ? cc.r : 70, active ? cc.g : 70, active ? cc.b : 75, 255);
-                int tw = textWidthTTF(catName(c));
-                drawTextTTF(rnd, (L.CAT_PANEL_WIDTH-tw)/2,
-                            btnY + (L.CAT_BTN_HEIGHT-textHeightTTF())/2,
-                            catName(c), 255, 255, 255, 255);
+            int catPanelX = 0;
+            int catPanelY = L.TOOLBAR_HEIGHT;
+            SDL_Rect catBg = {catPanelX, catPanelY, L.CAT_PANEL_WIDTH, winH - catPanelY};
+            SDL_SetRenderDrawColor(rnd, 45, 45, 75, 255);
+            SDL_RenderFillRect(rnd, &catBg);
+            for (int c = 0; c < NUM_CATEGORIES; c++) {
+                int btnY = catPanelY + c * L.CAT_BTN_HEIGHT;
+                SDL_Color cc = catColor((Category)c);
+                if ((Category)c == gSelectedCat) {
+                    fillRoundedRect(rnd, catPanelX+2, btnY+2, L.CAT_PANEL_WIDTH-4, L.CAT_BTN_HEIGHT-4,
+                                    6, cc.r, cc.g, cc.b, 255);
+                } else {
+                    fillRoundedRect(rnd, catPanelX+4, btnY+4, L.CAT_PANEL_WIDTH-8, L.CAT_BTN_HEIGHT-8,
+                                    4, cc.r, cc.g, cc.b, 180);
+                }
+                drawTextTTF(rnd, catName((Category)c),
+                            catPanelX + 10, btnY + (L.CAT_BTN_HEIGHT - textHeightTTF(gFontSmall))/2,
+                            {255,255,255,255}, gFontSmall);
             }
         }
+
         {
             int palX = L.CAT_PANEL_WIDTH;
-            int palW = L.PALETTE_WIDTH - L.CAT_PANEL_WIDTH;
             int palY = L.TOOLBAR_HEIGHT;
-            int palH = L.winH - L.TOOLBAR_HEIGHT;
+            int palW = L.PALETTE_WIDTH - L.CAT_PANEL_WIDTH;
+            int palH = winH - palY;
             SDL_Rect palBg = {palX, palY, palW, palH};
-            SDL_SetRenderDrawColor(rnd, 42, 42, 52, 255);
+            SDL_SetRenderDrawColor(rnd, 235, 235, 240, 255);
             SDL_RenderFillRect(rnd, &palBg);
-            SDL_Rect clipRect = {palX, palY, palW, palH};
-            SDL_RenderSetClipRect(rnd, &clipRect);
+
+            SDL_Rect clip = {palX, palY, palW, palH};
+            SDL_RenderSetClipRect(rnd, &clip);
             for (auto& b : gBlocks) {
                 if (!b.inPalette || b.cat != gSelectedCat) continue;
-                float origX = b.x, origY = b.y;
-                b.x = palX + origX;
-                b.y = palY + origY - paletteScrollY;
-                renderBlock(rnd, b);
-                b.x = origX;
-                b.y = origY;
+                float drawX = b.x + palX - 10;
+                float drawY = b.y + palY + paletteScrollY;
+                float ox = b.x, oy = b.y;
+                b.x = drawX; b.y = drawY;
+                drawBlock(rnd, b);
+                b.x = ox; b.y = oy;
             }
             SDL_RenderSetClipRect(rnd, nullptr);
         }
+
         {
-            int workX = L.PALETTE_WIDTH;
-            int workW = L.winW - L.PALETTE_WIDTH - L.STAGE_WIDTH;
-            int workY = L.TOOLBAR_HEIGHT;
-            int workH = L.winH - L.TOOLBAR_HEIGHT;
-            SDL_Rect workBg = {workX, workY, workW, workH};
-            SDL_SetRenderDrawColor(rnd, 240, 240, 245, 255);
-            SDL_RenderFillRect(rnd, &workBg);
-            for (int gx = workX + 20; gx < workX + workW; gx += 30) {
-                for (int gy = workY + 20; gy < workY + workH; gy += 30) {
-                    SDL_SetRenderDrawColor(rnd, 210, 210, 215, 255);
-                    SDL_RenderDrawPoint(rnd, gx, gy);
-                }
+            int wsX = L.PALETTE_WIDTH;
+            int wsY = L.TOOLBAR_HEIGHT;
+            int wsW = winW - L.PALETTE_WIDTH - L.STAGE_WIDTH;
+            int wsH = winH - wsY;
+            SDL_Rect wsBg = {wsX, wsY, wsW, wsH};
+            SDL_SetRenderDrawColor(rnd, 250, 250, 252, 255);
+            SDL_RenderFillRect(rnd, &wsBg);
+            drawTextTTF(rnd, "Workspace", wsX + 10, wsY + 5, {180,180,190,255}, gFontSmall);
+
+            if (activeSpriteTab >= 0 && activeSpriteTab < (int)gSprites.size()) {
+                string info = gSprites[activeSpriteTab].name + " blocks:";
+                drawTextTTF(rnd, info.c_str(), wsX + 10, wsY + 22, {120,120,140,255}, gFontSmall);
             }
-            SDL_Rect workClip = {workX, workY, workW, workH};
-            SDL_RenderSetClipRect(rnd, &workClip);
+
             for (auto& b : gBlocks) {
                 if (b.inPalette) continue;
-                bool belongs = false;
-                if (selectedSpriteIdx >= 0 && selectedSpriteIdx < (int)gSpriteBlockIds.size()) {
-                    auto& ids = gSpriteBlockIds[selectedSpriteIdx];
-                    belongs = find(ids.begin(), ids.end(), b.id) != ids.end();
+                if (activeSpriteTab >= 0 && activeSpriteTab < (int)gSpriteBlockIds.size()) {
+                    auto& ids = gSpriteBlockIds[activeSpriteTab];
+                    if (find(ids.begin(), ids.end(), b.id) == ids.end()) continue;
                 }
-                if (b.id == dragBlockId) belongs = true;
-                if (!belongs) continue;
-                renderBlock(rnd, b);
+                bool hl = (gDragging && b.id == gDragBlockId);
+                drawBlock(rnd, b, hl);
             }
-            SDL_RenderSetClipRect(rnd, nullptr);
         }
+
         {
-            int stageX = L.winW - L.STAGE_WIDTH;
+            int stageX = winW - L.STAGE_WIDTH;
             int stageY = L.TOOLBAR_HEIGHT;
-            int stageW = L.STAGE_WIDTH;
-            int stageH = L.STAGE_HEIGHT;
-            fillRoundedRect(rnd, stageX, stageY, stageW, stageH, 4, 255, 255, 255, 255);
-            drawRoundedRectOutline(rnd, stageX, stageY, stageW, stageH, 4, 180, 180, 190, 255);
+            SDL_Rect stageBg = {stageX, stageY, L.STAGE_WIDTH, L.STAGE_HEIGHT};
+            SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
+            SDL_RenderFillRect(rnd, &stageBg);
+            drawRoundedRectOutline(rnd, stageX, stageY, L.STAGE_WIDTH, L.STAGE_HEIGHT, 4, 200, 200, 210, 255);
+
             for (auto& sp : gSprites) {
-                renderSpriteOnStage(rnd, sp, stageX, stageY, stageW, stageH);
+                drawSprite(rnd, sp, stageX, stageY, L.STAGE_WIDTH, L.STAGE_HEIGHT);
             }
-        }
-        {
-            int stageX = L.winW - L.STAGE_WIDTH;
-            int thumbY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
-            int thumbSize = L.SPRITE_THUMB;
-            SDL_Rect thumbBg = {stageX, thumbY - 2, L.STAGE_WIDTH, thumbSize + 50};
-            SDL_SetRenderDrawColor(rnd, 230, 230, 235, 255);
-            SDL_RenderFillRect(rnd, &thumbBg);
-            drawTextTTF(rnd, stageX + 5, thumbY - (int)(2), "Sprites:", 80, 80, 90, 255, gFontSmall);
-            for (int i = 0; i < (int)gSprites.size(); i++) {
-                Sprite& sp = gSprites[i];
-                int tx = stageX + 10 + i * (thumbSize + 8);
-                int ty = thumbY + 14;
-                bool sel = (i == selectedSpriteIdx);
-                fillRoundedRect(rnd, tx, ty, thumbSize, thumbSize, 6,
-                    sel ? 200 : 240, sel ? 220 : 240, sel ? 255 : 245, 255);
-                if (sel)
-                    drawRoundedRectOutline(rnd, tx-1, ty-1, thumbSize+2, thumbSize+2, 6, 50,150,255,255);
-                if (sp.uploadedTexture) {
-                    SDL_Rect dst = {tx+4, ty+4, thumbSize-8, thumbSize-8};
-                    SDL_RenderCopy(rnd, sp.uploadedTexture, nullptr, &dst);
-                } else {
-                    fillEllipse(rnd, tx + thumbSize/2, ty + thumbSize/2,
-                                thumbSize/3, thumbSize/3, sp.color.r, sp.color.g, sp.color.b, 255);
-                    char l[2] = {sp.name[0], 0};
-                    int tw = textWidthTTF(l, gFontSmall);
-                    drawTextTTF(rnd, tx + (thumbSize-tw)/2, ty + thumbSize/2 - 6,
-                                l, 255, 255, 255, 255, gFontSmall);
+
+            int flagX = stageX + L.STAGE_WIDTH - 80;
+            int flagY = stageY + L.STAGE_HEIGHT + 5;
+            fillRoundedRect(rnd, flagX, flagY, 35, 30, 5, 50, 180, 50, 255);
+            drawTextTTF(rnd, "▶", flagX + 8, flagY + 5, {255,255,255,255}, gFontSmall);
+            fillRoundedRect(rnd, flagX + 40, flagY, 35, 30, 5, 200, 50, 50, 255);
+            drawTextTTF(rnd, "■", flagX + 48, flagY + 5, {255,255,255,255}, gFontSmall);
+
+            if (!gVariables.empty()) {
+                int vy = stageY + L.STAGE_HEIGHT - 25;
+                for (auto& kv : gVariables) {
+                    string vs = kv.first + ": " + floatToString(kv.second);
+                    fillRoundedRect(rnd, stageX + 5, vy, 120, 20, 4, 230, 120, 0, 200);
+                    drawTextTTF(rnd, vs.c_str(), stageX + 10, vy + 2, {255,255,255,255}, gFontSmall);
+                    vy -= 25;
                 }
-                int nw = textWidthTTF(sp.name.c_str(), gFontSmall);
-                drawTextTTF(rnd, tx + (thumbSize-nw)/2, ty + thumbSize + 1,
-                            sp.name.c_str(), 60, 60, 70, 255, gFontSmall);
             }
-            {
-                int uploadBtnY = thumbY + thumbSize + 22;
-                int uploadBtnW = (int)(100 * L.s);
-                int uploadBtnH = (int)(28 * L.s);
-                int uploadBtnX = stageX + 10;
-                fillRoundedRect(rnd, uploadBtnX, uploadBtnY, uploadBtnW, uploadBtnH, 5,
-                                60, 130, 200, 255);
-                int tw = textWidthTTF("Upload Image");
-                drawTextTTF(rnd, uploadBtnX + (uploadBtnW-tw)/2,
-                            uploadBtnY + (uploadBtnH - textHeightTTF())/2,
-                            "Upload Image", 255, 255, 255, 255);
-            }
-        }
-        if (selectedSpriteIdx >= 0 && selectedSpriteIdx < (int)gSprites.size()) {
-            Sprite& sp = gSprites[selectedSpriteIdx];
-            int infoX = L.winW - L.STAGE_WIDTH;
-            int infoY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + L.SPRITE_THUMB + 60;
-            int infoW = L.STAGE_WIDTH;
-            int infoH = L.winH - infoY;
-            if (infoH > 30) {
-                SDL_Rect infoBg = {infoX, infoY, infoW, infoH};
-                SDL_SetRenderDrawColor(rnd, 245, 245, 250, 255);
-                SDL_RenderFillRect(rnd, &infoBg);
-                int ty = infoY + 5;
-                char buf[128];
-                snprintf(buf, sizeof(buf), "Name: %s", sp.name.c_str());
-                drawTextTTF(rnd, infoX+10, ty, buf, 50, 50, 60, 255, gFontSmall); ty += 18;
-                snprintf(buf, sizeof(buf), "x: %.0f  y: %.0f", sp.x, sp.y);
-                drawTextTTF(rnd, infoX+10, ty, buf, 50, 50, 60, 255, gFontSmall); ty += 18;
-                snprintf(buf, sizeof(buf), "Size: %.0f%%  Dir: %.0f", sp.size, sp.direction);
-                drawTextTTF(rnd, infoX+10, ty, buf, 50, 50, 60, 255, gFontSmall);
+
+            int sprListY = stageY + L.STAGE_HEIGHT + 45;
+
+            fillRoundedRect(rnd, stageX + 5, sprListY, 60, 30, 5, 80, 80, 180, 255);
+            drawTextTTF(rnd, "+ Sprite", stageX + 10, sprListY + 6, {255,255,255,255}, gFontSmall);
+
+            fillRoundedRect(rnd, stageX + 75, sprListY, 80, 30, 5, 80, 160, 80, 255);
+            drawTextTTF(rnd, "Upload Img", stageX + 80, sprListY + 6, {255,255,255,255}, gFontSmall);
+
+            for (int i = 0; i < (int)gSprites.size(); i++) {
+                int tx = stageX + 5 + i * (L.SPRITE_THUMB + 10);
+                int ty = sprListY + 40;
+                SDL_Color sc = gSprites[i].color;
+                if (i == activeSpriteTab) {
+                    fillRoundedRect(rnd, tx-2, ty-2, L.SPRITE_THUMB+4, L.SPRITE_THUMB+4, 6, 60, 60, 200, 255);
+                }
+                fillRoundedRect(rnd, tx, ty, L.SPRITE_THUMB, L.SPRITE_THUMB, 5, sc.r, sc.g, sc.b, 200);
+                drawTextTTF(rnd, gSprites[i].name.c_str(), tx+3, ty + L.SPRITE_THUMB/2 - 6,
+                            {255,255,255,255}, gFontSmall);
             }
         }
-        if (showDeleteMenu) {
-            int menuW = (int)(120 * L.s);
-            int menuH = (int)(30 * L.s);
-            fillRoundedRect(rnd, deleteMenuX, deleteMenuY, menuW, menuH, 5, 200, 60, 60, 240);
-            int tw = textWidthTTF("Delete Block");
-            drawTextTTF(rnd, deleteMenuX + (menuW-tw)/2, deleteMenuY + (menuH-textHeightTTF())/2,
-                        "Delete Block", 255, 255, 255, 255);
-        }
+
         SDL_RenderPresent(rnd);
         SDL_Delay(16);
     }
+
     for (auto& sp : gSprites) {
         if (sp.uploadedTexture) SDL_DestroyTexture(sp.uploadedTexture);
     }
     closeFonts();
-    SDL_DestroyRenderer(rnd);
+    SDL_DestroyRenderer(gRenderer);
     SDL_DestroyWindow(window);
     IMG_Quit();
     SDL_Quit();
