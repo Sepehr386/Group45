@@ -6,9 +6,9 @@
 #include <SDL2/SDL2_gfxPrimitives.h>
 using namespace std;
 
-// ════════════════════════════════════════════
-//  Constants (base design size)
-// ════════════════════════════════════════════
+
+
+
 static const int   BASE_WIDTH            = 1280;
 static const int   BASE_HEIGHT           = 720;
 
@@ -60,9 +60,9 @@ static BackdropItem gBackdropItems[] = {
     {"sunset",   "backdrops/sunset.png"},
 };
 
-// ════════════════════════════════════════════
-//  Scaling system
-// ════════════════════════════════════════════
+
+
+
 struct LayoutScale {
     float sx, sy, s;
     int winW, winH;
@@ -116,13 +116,13 @@ struct LayoutScale {
 };
 static LayoutScale L;
 
-// ════════════════════════════════════════════
-//  TTF Font System
-// ════════════════════════════════════════════
+
+
+
 static bool loadBackdrop(SDL_Renderer* rnd, const char* path) {
     SDL_Surface* surf = IMG_Load(path);
     if (!surf) return false;
-    // aspect ratio fit
+    
     int winW = L.winW, winH = L.winH - L.TOOLBAR_HEIGHT;
     float scaleX = (float)winW / surf->w;
     float scaleY = (float)winH / surf->h;
@@ -201,9 +201,9 @@ static int textHeightTTF(TTF_Font* font = nullptr) {
     return TTF_FontHeight(font);
 }
 
-// ════════════════════════════════════════════
-//  Shape helpers
-// ════════════════════════════════════════════
+
+
+
 static void fillRoundedRect(SDL_Renderer* rnd, int x, int y, int w, int h,
                             int radius, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
@@ -237,31 +237,31 @@ static void drawRoundedRectOutline(SDL_Renderer* rnd, int x, int y, int w, int h
 static void renderBackdropPanel(SDL_Renderer* rnd) {
     if (!gBackdropPanelOpen) return;
 
-    // ابعاد پنل
+    
     int panelW = (int)(320 * L.s);
     int panelH = (int)(420 * L.s);
     int panelX = (L.winW - panelW) / 2;
     int panelY = L.TOOLBAR_HEIGHT + (int)(20 * L.s);
 
-    // پس‌زمینه پنل
+    
     fillRoundedRect(rnd, panelX, panelY, panelW, panelH, 10, 240, 240, 245, 255);
     drawRoundedRectOutline(rnd, panelX, panelY, panelW, panelH, 10, 180, 180, 200, 255);
 
-    // عنوان
+    
     drawTextTTF(rnd, panelX + 10, panelY + 8, "Background Settings", 50, 50, 80, 255, gFontLarge);
 
-    // نام backdrop فعلی
+    
     string curName = "Current: " + gCurrentBackdropName;
     drawTextTTF(rnd, panelX + 10, panelY + 32, curName.c_str(), 100, 100, 130, 255);
 
-    // دکمه بستن (X)
+    
     int closeBtnSz = (int)(24 * L.s);
     int closeBtnX = panelX + panelW - closeBtnSz - 8;
     int closeBtnY = panelY + 8;
     fillRoundedRect(rnd, closeBtnX, closeBtnY, closeBtnSz, closeBtnSz, 5, 220, 60, 60, 255);
     drawTextTTF(rnd, closeBtnX + 6, closeBtnY + 2, "X", 255, 255, 255, 255);
 
-    // زیرمنوها (tabs)
+    
     const char* tabs[] = {"Library", "Upload", "Editor"};
     int tabW = panelW / 3;
     int tabH = (int)(32 * L.s);
@@ -283,13 +283,13 @@ static void renderBackdropPanel(SDL_Renderer* rnd) {
             255);
     }
 
-    // محتوای هر tab
+    
     int contentY = tabY + tabH + (int)(10 * L.s);
     int contentX = panelX + (int)(10 * L.s);
     int contentW = panelW - (int)(20 * L.s);
 
 if (gBackdropPanelTab == 0) {
-    // Library Tab
+    
     drawTextTTF(rnd, contentX, contentY, "Default Backgrounds:", 60, 60, 80, 255);
     int thumbW = (int)(60 * L.s);
     int thumbH = (int)(45 * L.s);
@@ -298,14 +298,14 @@ if (gBackdropPanelTab == 0) {
         int itemY = contentY + (int)(20 * L.s) + i * (itemH + 8);
         bool isSelected = (gCurrentBackdropName == gBackdropItems[i].name);
 
-        // پس‌زمینه آیتم
+        
         fillRoundedRect(rnd, contentX, itemY, contentW, itemH, 6,
             isSelected ? 80 : 230,
             isSelected ? 140 : 230,
             isSelected ? 200 : 235,
             255);
 
-        // پیش‌نمایش تصویر
+        
         SDL_Surface* prevSurf = IMG_Load(gBackdropItems[i].path);
         if (prevSurf) {
             SDL_Texture* prevTex = SDL_CreateTextureFromSurface(rnd, prevSurf);
@@ -321,13 +321,13 @@ if (gBackdropPanelTab == 0) {
                 SDL_DestroyTexture(prevTex);
             }
         } else {
-            // اگر فایل نبود، یک مستطیل خاکستری نشون بده
+            
             fillRoundedRect(rnd, contentX + 4, itemY + (itemH - thumbH) / 2,
                 thumbW, thumbH, 4, 180, 180, 180, 255);
             drawTextTTF(rnd, contentX + 8, itemY + itemH/2 - 6, "?", 100, 100, 100, 255);
         }
 
-        // نام backdrop
+        
         drawTextTTF(rnd, contentX + thumbW + 12, itemY + (itemH - textHeightTTF()) / 2,
             gBackdropItems[i].name,
             isSelected ? 255 : 50,
@@ -335,14 +335,14 @@ if (gBackdropPanelTab == 0) {
             isSelected ? 255 : 60,
             255);
 
-        // تیک انتخاب
+        
         if (isSelected) {
             drawTextTTF(rnd, contentX + contentW - 30, itemY + (itemH - textHeightTTF()) / 2,
                 "✓", 255, 255, 255, 255);
         }
     }
     } else if (gBackdropPanelTab == 1) {
-        // Upload Tab
+        
         drawTextTTF(rnd, contentX, contentY, "Upload from system:", 60, 60, 80, 255);
         int btnW = (int)(140 * L.s), btnH = (int)(40 * L.s);
         int btnX = panelX + (panelW - btnW) / 2;
@@ -352,7 +352,7 @@ if (gBackdropPanelTab == 0) {
         drawTextTTF(rnd, btnX + (btnW - tw) / 2, btnY + (btnH - textHeightTTF()) / 2,
             "Choose Image...", 255, 255, 255, 255);
     } else if (gBackdropPanelTab == 2) {
-        // Editor Tab
+        
         drawTextTTF(rnd, contentX, contentY, "Built-in editor:", 60, 60, 80, 255);
         int btnW = (int)(140 * L.s), btnH = (int)(40 * L.s);
         int btnX = panelX + (panelW - btnW) / 2;
@@ -365,9 +365,9 @@ if (gBackdropPanelTab == 0) {
 }
 
 
-// ════════════════════════════════════════════
-//  Category
-// ════════════════════════════════════════════
+
+
+
 enum Category { MOTION, LOOKS, SOUND, EVENTS, CONTROL, SENSING, OPERATORS, VARIABLES };
 static const int NUM_CATEGORIES = 8;
 
@@ -399,9 +399,9 @@ static const char* catName(Category c) {
     return "?";
 }
 
-// ════════════════════════════════════════════
-//  Sprite
-// ════════════════════════════════════════════
+
+
+
 struct Sprite {
     string name;
     float x, y;
@@ -441,9 +441,9 @@ static Sprite createDefaultSprite(const char* name, float x, float y, SDL_Color 
     return sp;
 }
 
-// ════════════════════════════════════════════
-//  Block types
-// ════════════════════════════════════════════
+
+
+
 enum BlockShape { COMMAND, C_BLOCK, HAT, CAP, REPORTER, BOOLEAN };
 
 struct InputField {
@@ -475,11 +475,29 @@ struct Block {
     vector<OperatorSlot> opSlots;
 };
 
+
+
+struct ScriptThread {
+    int currentBlockId;      
+    int spriteIdx;           
+    float waitTimer;         
+    bool isWaiting;          
+    int repeatCounter;       
+    vector<pair<int,int>> loopStack;  
+
+    ScriptThread(int blockId, int sprite)
+        : currentBlockId(blockId), spriteIdx(sprite),
+          waitTimer(0), isWaiting(false), repeatCounter(0) {}
+};
+
+static vector<ScriptThread> gActiveThreads;  
+
+
 static int gNextBlockId = 1000;
 
-// ════════════════════════════════════════════
-//  Global state
-// ════════════════════════════════════════════
+
+
+
 static bool gIsRunning = false;
 static float gTimer = 0;
 static int gBgColor = 0;
@@ -517,9 +535,9 @@ static string floatToString(float f) {
     return string(buf);
 }
 
-// ════════════════════════════════════════════
-//  Build blocks
-// ════════════════════════════════════════════
+
+
+
 static Block makeBlock(int id, Category cat, BlockShape shape, const string& text,
                        float x, float y, bool inPalette,
                        vector<InputField> fields = {},
@@ -556,7 +574,7 @@ static vector<Block> buildPaletteBlocks() {
     float bw = L.BLOCK_WIDTH, bh = L.BLOCK_HEIGHT;
     float fieldH = bh * 0.55f, fieldW = bw * 0.2f, slotW = bw * 0.25f;
 
-    // MOTION
+    
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "move  steps", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.25f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "turn R  deg", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"15")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "turn L  deg", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"15")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH)}));
@@ -571,7 +589,7 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "y position", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "direction", 0,0,true,{},{}));
 
-    // LOOKS
+    
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "say  for  s", 0,0,true, {makeInput(bw*0.2f,bh*0.15f,fieldW*1.2f,fieldH,"Hello!"),makeInput(bw*0.6f,bh*0.15f,fieldW*0.7f,fieldH,"2")}, {}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "say ", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW*1.5f,fieldH,"Hello!")}, {}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "think  for  s", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW*1.2f,fieldH,"Hmm..."),makeInput(bw*0.65f,bh*0.15f,fieldW*0.7f,fieldH,"2")}, {}));
@@ -583,21 +601,21 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "costume #", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "size", 0,0,true,{},{}));
 
-    // SOUND
+    
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "play sound", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "stop sounds", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "set vol to %", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"100")},{}));
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "change vol by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"-10")},{}));
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::REPORTER, "volume", 0,0,true,{},{}));
 
-    // EVENTS
+    
     blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when flag clicked", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when space pressed", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when sprite clicked", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::COMMAND, "broadcast ", 0,0,true, {makeInput(bw*0.5f,bh*0.15f,fieldW*1.2f,fieldH,"msg1")},{}));
     blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when I receive ", 0,0,true, {makeInput(bw*0.65f,bh*0.15f,fieldW*1.0f,fieldH,"msg1")},{}));
 
-    // CONTROL
+    
     blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::COMMAND, "wait  secs", 0,0,true, {makeInput(bw*0.27f,bh*0.15f,fieldW,fieldH,"1")}, {makeOpSlot(bw*0.27f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "repeat ", 0,0,true, {makeInput(bw*0.4f,bh*0.05f,fieldW,fieldH*0.8f,"10")}, {makeOpSlot(bw*0.4f,bh*0.05f,slotW,fieldH*0.8f)}));
     blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "forever", 0,0,true,{},{}));
@@ -607,7 +625,7 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::COMMAND, "wait until ", 0,0,true, {}, {makeOpSlot(bw*0.5f,bh*0.15f,slotW*1.3f,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "repeat until ", 0,0,true, {}, {makeOpSlot(bw*0.55f,bh*0.05f,slotW*1.3f,fieldH*0.8f)}));
 
-    // SENSING
+    
     blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "touching edge?", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "touching mouse?", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "mouse x", 0,0,true,{},{}));
@@ -619,7 +637,7 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::COMMAND, "ask  and wait", 0,0,true, {makeInput(bw*0.2f,bh*0.15f,fieldW*1.5f,fieldH,"What?")},{}));
     blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "answer", 0,0,true,{},{}));
 
-    // OPERATORS
+    
     blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  +  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
     blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  -  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
     blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  *  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
@@ -635,7 +653,7 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "round ", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "abs of ", 0,0,true, {makeInput(bw*0.4f,bh*0.15f,fieldW,fieldH,"")}, {makeOpSlot(bw*0.4f,bh*0.15f,slotW,fieldH)}));
 
-    // VARIABLES
+    
     blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::REPORTER, "my variable", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::COMMAND, "set var to ", 0,0,true, {makeInput(bw*0.55f,bh*0.15f,fieldW,fieldH,"0")}, {makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::COMMAND, "change var by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"1")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
@@ -765,9 +783,9 @@ static void drawBlock(SDL_Renderer* rnd, Block& b, vector<Block>& allBlocks, boo
     }
 }
 
-// ════════════════════════════════════════════
-//  Draw cat sprite
-// ════════════════════════════════════════════
+
+
+
 static void drawCatSprite(SDL_Renderer* rnd, int cx, int cy, int sz, SDL_Color col) {
     SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND);
     int half=sz/2;
@@ -867,9 +885,273 @@ static void resetProject(vector<Block>& blocks, vector<Sprite>& sprites) {
     gEdit={-1,-1,-1,false,"",0};
 }
 
-// ════════════════════════════════════════════
-//  MAIN
-// ════════════════════════════════════════════
+
+
+
+
+static float getInputValue(Block& block, int inputIdx) {
+    if (inputIdx >= 0 && inputIdx < (int)block.inputs.size()) {
+        try {
+            return stof(block.inputs[inputIdx].value);
+        } catch (...) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+
+static string getInputString(Block& block, int inputIdx) {
+    if (inputIdx >= 0 && inputIdx < (int)block.inputs.size()) {
+        return block.inputs[inputIdx].value;
+    }
+    return "";
+}
+
+
+static void startGreenFlag(vector<Block>& blocks, vector<Sprite>& sprites) {
+    gActiveThreads.clear();
+    gIsRunning = true;
+    gTimer = 0;
+
+    
+    for (auto& block : blocks) {
+        if (block.inPalette) continue;  
+
+        
+        if (block.text.find("when") != string::npos &&
+            block.text.find("flag") != string::npos) {
+
+            
+            for (int i = 0; i < (int)sprites.size(); i++) {
+                
+                if (block.nextBlockId != -1) {
+                    gActiveThreads.push_back(ScriptThread(block.nextBlockId, i));
+                }
+            }
+        }
+    }
+
+    cout << "Green flag clicked! Started " << gActiveThreads.size() << " threads." << endl;
+}
+
+
+static void executeStep(ScriptThread& thread, vector<Block>& blocks,
+                        vector<Sprite>& sprites, float dt) {
+
+    
+    if (thread.currentBlockId == -1) return;
+
+    
+    if (thread.isWaiting) {
+        thread.waitTimer -= dt;
+        if (thread.waitTimer > 0) return;  
+        thread.isWaiting = false;
+        
+        Block* b = findBlock(blocks, thread.currentBlockId);
+        if (b) thread.currentBlockId = b->nextBlockId;
+        return;
+    }
+
+    
+    Block* block = findBlock(blocks, thread.currentBlockId);
+    if (!block) {
+        thread.currentBlockId = -1;
+        return;
+    }
+
+    
+    if (thread.spriteIdx < 0 || thread.spriteIdx >= (int)sprites.size()) {
+        thread.currentBlockId = -1;
+        return;
+    }
+
+    Sprite& sp = sprites[thread.spriteIdx];
+    string txt = block->text;
+
+
+    if (txt.find("move") != string::npos && txt.find("steps") != string::npos) {
+        float steps = getInputValue(*block, 0);
+        float rad = (sp.direction - 90.0f) * 3.14159f / 180.0f;
+        sp.x += cos(rad) * steps;
+        sp.y += sin(rad) * steps;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("turn") != string::npos && txt.find("R") != string::npos) {
+        sp.direction += getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("turn") != string::npos && txt.find("L") != string::npos) {
+        sp.direction -= getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("go to x") != string::npos) {
+        sp.x = getInputValue(*block, 0);
+        sp.y = getInputValue(*block, 1);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("set x to") != string::npos) {
+        sp.x = getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("set y to") != string::npos) {
+        sp.y = getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("change x by") != string::npos) {
+        sp.x += getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("change y by") != string::npos) {
+        sp.y += getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("point dir") != string::npos) {
+        sp.direction = getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("glide") != string::npos) {
+        
+        sp.x = getInputValue(*block, 1);
+        sp.y = getInputValue(*block, 2);
+        thread.isWaiting = true;
+        thread.waitTimer = getInputValue(*block, 0);
+    }
+
+
+    else if (txt.find("say") != string::npos && txt.find("sec") != string::npos) {
+        sp.sayText = getInputString(*block, 0);
+        sp.sayTimer = getInputValue(*block, 1);
+        thread.isWaiting = true;
+        thread.waitTimer = sp.sayTimer;
+    }
+    else if (txt.find("say") != string::npos) {
+        sp.sayText = getInputString(*block, 0);
+        sp.sayTimer = -1;  
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("think") != string::npos && txt.find("sec") != string::npos) {
+        sp.thinkText = getInputString(*block, 0);
+        sp.thinkTimer = getInputValue(*block, 1);
+        thread.isWaiting = true;
+        thread.waitTimer = sp.thinkTimer;
+    }
+    else if (txt.find("think") != string::npos) {
+        sp.thinkText = getInputString(*block, 0);
+        sp.thinkTimer = -1;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt == "show") {
+        sp.visible = true;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt == "hide") {
+        sp.visible = false;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("set size") != string::npos) {
+        sp.size = getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("change size") != string::npos) {
+        sp.size += getInputValue(*block, 0);
+        thread.currentBlockId = block->nextBlockId;
+    }
+
+    
+    
+    
+    else if (txt.find("wait") != string::npos && txt.find("sec") != string::npos) {
+        thread.isWaiting = true;
+        thread.waitTimer = getInputValue(*block, 0);
+    }
+    else if (txt == "forever") {
+        
+        if (block->childHeadId != -1) {
+            thread.loopStack.push_back({block->id, -1});  
+            thread.currentBlockId = block->childHeadId;
+        } else {
+            
+            
+            thread.isWaiting = true;
+            thread.waitTimer = 0.016f;  
+        }
+    }
+    else if (txt.find("repeat") != string::npos && txt.find("until") == string::npos) {
+        int count = (int)getInputValue(*block, 0);
+
+        
+        bool foundInStack = false;
+        for (auto& lp : thread.loopStack) {
+            if (lp.first == block->id) {
+                foundInStack = true;
+                lp.second++;
+                if (lp.second >= count) {
+                    
+                    thread.loopStack.pop_back();
+                    thread.currentBlockId = block->nextBlockId;
+                } else {
+                    
+                    if (block->childHeadId != -1) {
+                        thread.currentBlockId = block->childHeadId;
+                    }
+                }
+                break;
+            }
+        }
+
+        if (!foundInStack) {
+            
+            thread.loopStack.push_back({block->id, 0});
+            if (block->childHeadId != -1) {
+                thread.currentBlockId = block->childHeadId;
+            } else {
+                thread.currentBlockId = block->nextBlockId;
+            }
+        }
+    }
+    else if (txt.find("stop") != string::npos && txt.find("all") != string::npos) {
+        gIsRunning = false;
+        gActiveThreads.clear();
+        return;
+    }
+
+    
+    
+    
+    else {
+        thread.currentBlockId = block->nextBlockId;
+    }
+
+    
+    
+    
+    if (thread.currentBlockId == -1 && !thread.loopStack.empty()) {
+        
+        int loopBlockId = thread.loopStack.back().first;
+        thread.currentBlockId = loopBlockId;
+    }
+}
+
+
+static void executeAllThreads(vector<Block>& blocks, vector<Sprite>& sprites, float dt) {
+    if (!gIsRunning) return;
+
+    
+    for (int i = (int)gActiveThreads.size() - 1; i >= 0; i--) {
+        executeStep(gActiveThreads[i], blocks, sprites, dt);
+
+        
+        if (gActiveThreads[i].currentBlockId == -1 &&
+            gActiveThreads[i].loopStack.empty()) {
+            gActiveThreads.erase(gActiveThreads.begin() + i);
+        }
+    }
+}
+
+
+
+
 int main(int argc, char* argv[]) {
     if (!(IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG)) {
         cout << "SDL_image Error: " << IMG_GetError() << endl;
@@ -939,9 +1221,9 @@ int main(int argc, char* argv[]) {
             if(sp.thinkTimer>0){sp.thinkTimer-=dt;if(sp.thinkTimer<=0){sp.thinkTimer=0;sp.thinkText.clear();}}
         }
 
-        // ════════════════════════════════════════════
-        //  EVENT LOOP
-        // ════════════════════════════════════════════
+        
+        
+        
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type==SDL_QUIT) running=false;
@@ -957,7 +1239,7 @@ int main(int argc, char* argv[]) {
                 if(mx<L.PALETTE_WIDTH&&my>L.TOOLBAR_HEIGHT){paletteScrollY+=e.wheel.y*20;if(paletteScrollY>0)paletteScrollY=0;}
             }
 
-            // TEXT INPUT
+            
             if (e.type==SDL_TEXTINPUT) {
                 if(gEdit.active&&gEdit.blockId>=0&&gEdit.fieldIndex>=0){Block* eb=findBlock(blocks,gEdit.blockId);if(eb&&gEdit.fieldIndex<(int)eb->inputs.size())eb->inputs[gEdit.fieldIndex].value+=e.text.text;}
                 if(sprInfoEdit.field>=0&&selectedSpriteIdx<(int)sprites.size())sprInfoEdit.buffer+=e.text.text;
@@ -981,11 +1263,11 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // MOUSE DOWN
+            
             if (e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT) {
                 int mx=e.button.x, my=e.button.y;
                 bool clickedOnField=false;
-                // ─── Backdrop Panel Clicks ───
+                
                 if (gBackdropPanelOpen) {
     int panelW = (int)(320 * L.s);
     int panelH = (int)(420 * L.s);
@@ -1060,7 +1342,7 @@ int main(int argc, char* argv[]) {
             SDL_SetRenderTarget(rnd, costumeCanvas);
             SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
             SDL_RenderClear(rnd);
-            // اگر backdrop فعلی موجوده، اون رو روی canvas کپی کن
+            
             if (gBackdropTexture) {
                 SDL_RenderCopy(rnd, gBackdropTexture, nullptr, nullptr);
             }
@@ -1071,7 +1353,7 @@ int main(int argc, char* argv[]) {
     continue;
 }
 
-                // Sprite info panel fields and costume edit mode checks...
+                
                 {
                     int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
                     int thumbSz = L.SPRITE_THUMB;
@@ -1153,7 +1435,7 @@ int main(int argc, char* argv[]) {
                     }
                     if(mx >= editorX+160 && mx <= editorX+220 && my >= toolbarY && my <= toolbarY+30) {
                         if (gBackdropEditMode) {
-                            // ذخیره به عنوان backdrop
+                            
                             if (gBackdropTexture) SDL_DestroyTexture(gBackdropTexture);
                             gBackdropTexture = costumeCanvas;
                             costumeCanvas = nullptr;
@@ -1180,7 +1462,7 @@ int main(int argc, char* argv[]) {
                 int fieldW2=(int)(stageW*0.35f), fieldH2=(int)(22*L.s);
                 infoY=spriteAreaY+thumbSize+10, infoX=panelX+5;
 
-                // Upload button
+                
                 {
                     int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
                     int thumbSz = L.SPRITE_THUMB;
@@ -1221,7 +1503,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Edit button
+                
                 {
                     int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
                     int thumbSz = L.SPRITE_THUMB;
@@ -1256,7 +1538,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
-                // Sprite info panel fields
+                
                 {
                     int panelX=L.PALETTE_WIDTH, stageW=L.STAGE_WIDTH;
                     int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
@@ -1285,7 +1567,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Block input fields
+                
                 if (!clickedOnField) {
                     for (auto& b:blocks) {
                         if(b.inPalette) continue;
@@ -1312,7 +1594,7 @@ int main(int argc, char* argv[]) {
                     sprInfoEdit.field=-1; sprInfoEdit.buffer.clear();
                 }
 
-                // Toolbar buttons
+                
                 {
                     int bgBtnX = L.PALETTE_WIDTH + L.STAGE_WIDTH - (int)(35*L.s);
                     int bgBtnY = L.TOOLBAR_HEIGHT + 3;
@@ -1367,14 +1649,14 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     continue;
                 }
 
-                // Category buttons
+                
                 if (mx<L.CAT_PANEL_WIDTH&&my>L.TOOLBAR_HEIGHT) {
                     int catY=L.TOOLBAR_HEIGHT+5;
                     for(int i=0;i<NUM_CATEGORIES;i++){int btnY=catY+i*(L.CAT_BTN_HEIGHT+3);if(my>=btnY&&my<=btnY+L.CAT_BTN_HEIGHT){selectedCategory=(Category)i;paletteScrollY=0;break;}}
                     continue;
                 }
 
-                // Backdrop panel click handling (if edit mode is active)
+                
                 if (gBackdropEditMode) {
                     int panelX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
                     int panelY = L.TOOLBAR_HEIGHT + 20;
@@ -1386,7 +1668,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                             if (mx >= panelX + 10 && mx <= panelX + panelW - 10 && my >= btnY && my <= btnY + 35) {
                                 gCurrentBackdropName = gBackdropItems[i].name;
                                 loadBackdrop(rnd, gBackdropItems[i].path);
-                                gBackdropTexture = nullptr; // TODO: load actual image
+                                gBackdropTexture = nullptr; 
                                 handled = true;
                                 break;
                             }
@@ -1422,7 +1704,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     }
                 }
 
-                // Add sprite button
+                
                 {
                     int stageRight=L.PALETTE_WIDTH+L.STAGE_WIDTH;
                     int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
@@ -1439,7 +1721,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     }
                 }
 
-                // Sprite thumbnails click
+                
                 {
                     int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
                     int thumbSz=L.SPRITE_THUMB, startX=L.PALETTE_WIDTH+5;
@@ -1475,7 +1757,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     if (handledSprite) continue;
                 }
 
-                // Stage sprite drag
+                
                 if (!clickedOnField) {
                     int stageX=L.PALETTE_WIDTH,stageY=L.TOOLBAR_HEIGHT,stageW=L.STAGE_WIDTH,stageH=L.STAGE_HEIGHT;
                     int stageCX=stageX+stageW/2, stageCY=stageY+stageH/2;
@@ -1496,7 +1778,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     }
                 }
 
-                // Block drag
+                
                 if (!clickedOnField&&!draggingSprite) {
                     for(int i=(int)blocks.size()-1;i>=0;i--){
                         Block& b=blocks[i];
@@ -1519,10 +1801,10 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     }
                 }
 
-            } // end MOUSE DOWN
+            } 
 
 
-            // MOUSE MOTION
+            
             if (e.type==SDL_MOUSEMOTION) {
                 int mx=e.motion.x, my=e.motion.y;
                 if(dragBlockId>=0){Block* db=findBlock(blocks,dragBlockId);if(db){float newX=mx-dragOffX,newY=my-dragOffY;moveBlockChain(blocks,dragBlockId,newX-db->x,newY-db->y);}}
@@ -1556,7 +1838,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 }
             }
 
-            // MOUSE UP
+            
             if (e.type==SDL_MOUSEBUTTONUP&&e.button.button==SDL_BUTTON_LEFT) {
                 if(costumeEditMode) {
                     isDrawing = false;
@@ -1573,15 +1855,15 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 }
                 draggingSprite=false; dragSpriteIdx=-1;
             }
-        } // end event loop
+        } 
 
-        // ════════════════════════════════════════════
-        //  RENDER
-        // ════════════════════════════════════════════
+        
+        
+        
         SDL_SetRenderDrawColor(rnd,240,240,240,255);
         SDL_RenderClear(rnd);
 
-        // ── Toolbar ──
+        
         {
             for (int i = 0; i < winW; i += 20) {
                 Uint8 r = (Uint8)(128 + 127 * sin((i + gToolbarAnimOffset) * 0.05));
@@ -1622,7 +1904,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
             drawTextTTF(rnd,fontBtnX+fontBtnW*2+10,flagY+fontBtnH/4,szBuf,180,220,255,255);
         }
 
-        // ── Category panel ──
+        
         {
             SDL_SetRenderDrawColor(rnd,45,45,60,255);
             SDL_Rect catPanel={0,L.TOOLBAR_HEIGHT,L.CAT_PANEL_WIDTH,winH-L.TOOLBAR_HEIGHT}; SDL_RenderFillRect(rnd,&catPanel);
@@ -1635,7 +1917,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
             }
         }
 
-        // ── Palette ──
+        
         {
             SDL_SetRenderDrawColor(rnd,50,50,65,255);
             SDL_Rect palBg={L.CAT_PANEL_WIDTH,L.TOOLBAR_HEIGHT,L.PALETTE_WIDTH-L.CAT_PANEL_WIDTH,winH-L.TOOLBAR_HEIGHT}; SDL_RenderFillRect(rnd,&palBg);
@@ -1645,11 +1927,11 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
             SDL_RenderSetClipRect(rnd,nullptr);
         }
 
-        // ── Stage ──
+        
         {
             int stageX=L.PALETTE_WIDTH,stageY=L.TOOLBAR_HEIGHT,stageW=L.STAGE_WIDTH,stageH=L.STAGE_HEIGHT;SDL_SetRenderDrawColor(rnd,255,255,255,255);
             SDL_Rect stageRect={stageX,stageY,stageW,stageH};
-            // ─── Backdrop Texture روی Stage ───
+            
             if (gBackdropTexture) {
                 int tw, th;
                 SDL_QueryTexture(gBackdropTexture, nullptr, nullptr, &tw, &th);
@@ -1718,7 +2000,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
             SDL_RenderSetClipRect(rnd,nullptr);
         }
 
-        // ── Sprite panel (below stage) ──
+        
         {
             int stageX=L.PALETTE_WIDTH, stageW=L.STAGE_WIDTH;
             int spriteAreaY=L.TOOLBAR_HEIGHT+L.STAGE_HEIGHT+5;
@@ -1764,7 +2046,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 int infoY=spriteAreaY+thumbSz+10, infoX=stageX+5;
                 int fieldW2=(int)(stageW*0.35f), fieldH2=(int)(22*L.s);
 
-                // Name
+                
                 {
                     drawTextTTF(rnd, infoX,infoY+(fieldH2-textHeightTTF())/2,"Name:",80,80,80,255);
                     int fx=infoX+(int)(40*L.s); bool editing=(sprInfoEdit.field==0);
@@ -1776,7 +2058,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 }
 
                 int row2Y=infoY+fieldH2+8;
-                // X
+                
                 {
                     drawTextTTF(rnd, infoX,row2Y+(fieldH2-textHeightTTF())/2,"X:",80,80,80,255);
                     int fx=infoX+(int)(15*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==1);
@@ -1786,7 +2068,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     drawTextTTF(rnd, fx+4,row2Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
                     if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row2Y+2,fx+4+cw,row2Y+fieldH2-2);}
                 }
-                // Y
+                
                 {
                     int fx=infoX+fieldW2+(int)(15*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==2);
                     drawTextTTF(rnd, infoX+fieldW2,row2Y+(fieldH2-textHeightTTF())/2,"Y:",80,80,80,255);
@@ -1798,7 +2080,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 }
 
                 int row3Y=row2Y+fieldH2+8;
-                // Size
+                
                 {
                     drawTextTTF(rnd, infoX,row3Y+(fieldH2-textHeightTTF())/2,"Sz:",80,80,80,255);
                     int fx=infoX+(int)(30*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==3);
@@ -1808,7 +2090,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                     drawTextTTF(rnd, fx+4,row3Y+(fieldH2-textHeightTTF())/2,val.c_str(),0,0,0,255);
 
                     if(editing){int cw=textWidthTTF(val.c_str());SDL_SetRenderDrawColor(rnd,0,0,0,255);SDL_RenderDrawLine(rnd,fx+4+cw,row3Y+2,fx+4+cw,row3Y+fieldH2-2);}
-                    // Upload button (drawn earlier, but we keep drawing here)
+                    
                     int uploadBtnW = (int)(60*L.s), uploadBtnH = fieldH2;
                     int uploadBtnX = infoX + fieldW2*2 - uploadBtnW - 10;
                     int uploadBtnY = infoY;
@@ -1843,7 +2125,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 int backBtnX = frontBtnX - layerBtnW - 5;
                 fillRoundedRect(rnd, backBtnX, layerBtnY, layerBtnW, layerBtnH, 4, 200, 50, 50, 255);
                 drawTextTTF(rnd, backBtnX + 10, layerBtnY + (layerBtnH - textHeightTTF()) / 2, "<<", 255, 255, 255, 255);
-                // Direction
+                
                 {
                     int fx=infoX+fieldW2+(int)(25*L.s),fw=fieldW2-(int)(20*L.s); bool editing=(sprInfoEdit.field==4);
                     drawTextTTF(rnd, infoX+fieldW2,row3Y+(fieldH2-textHeightTTF())/2,"Dir:",80,80,80,255);
@@ -1855,7 +2137,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
                 }
             }
         }
-        // ── Backdrop Settings Panel ──
+        
         if(gBackdropEditMode) {
             int panelX = L.PALETTE_WIDTH + L.STAGE_WIDTH + 20;
             int panelY = L.TOOLBAR_HEIGHT + 20;
@@ -1883,7 +2165,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
             drawTextTTF(rnd, panelX+80, closeBtnY+10, "Close", 255,255,255,255);
         }
 
-        // ── Workspace ──
+        
         {
             int wsX=L.PALETTE_WIDTH+L.STAGE_WIDTH, wsY=L.TOOLBAR_HEIGHT;
             int wsW=winW-wsX, wsH=winH-wsY;
@@ -1930,7 +2212,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
             drawTextTTF(rnd, editorX+240, toolbarY+5, "Exit", 255,255,255,255);
         }
 
-        // ── Draw workspace blocks ──
+        
         {
             for(auto& b:blocks){if(b.inPalette||b.id==dragBlockId) continue; drawBlock(rnd,b,blocks);}
             for(auto& b:blocks){if(b.inPalette) continue; for(auto& sl:b.opSlots){if(sl.embeddedBlockId>=0){Block* emb=findBlock(blocks,sl.embeddedBlockId);if(emb)drawBlock(rnd,*emb,blocks);}}}
@@ -1952,7 +2234,7 @@ if(mx >= backdropBtnX && mx <= backdropBtnX + backdropBtnW && my >= flagY && my 
 
         SDL_RenderPresent(rnd);
         SDL_Delay(16);
-    } // end main loop
+    } 
 
     SDL_StopTextInput();
     SDL_DestroyRenderer(rnd);
