@@ -1,4 +1,4 @@
-یک بار دیگر به کد من نگاه کن، مطمئن شو که چیز دیگری جا نیفتاده باشد #include <SDL2/SDL.h>
+#include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <bits/stdc++.h>
 #include <SDL_image.h>
@@ -9,7 +9,7 @@
 namespace fs = std::filesystem;
 
 using namespace std;
-
+static vector<int> gSpriteClickedHandlers;
 // ════════════════════════════════════════════
 //  Constants (base design size)
 // ════════════════════════════════════════════
@@ -64,7 +64,7 @@ static vector<string> gLoadProjectList;
 static int gLoadSelectedIndex = -1;
 static int gLoadScrollOffset = 0;
 // ══ LOAD PROJECT DIALOG ══
-
+static Uint8 const* gKeyboardState = nullptr;
 static string gNewProjectNameBuffer = "";
 static bool gNewProjectNameEditing = false;
 static int gNewProjectDialogCursorPos = 0;
@@ -80,10 +80,12 @@ static bool gStepMode = false;          // حالت گام‌به‌گام
 static bool gStepWait = false;          // منتظر برای گام بعدی
 static int gCycleCount = 0;             // شمارنده چرخه برای لاگ
 static int gWatchdogCounter = 0;        // شمارنده محافظ حلقه بی‌نهایت
-static const int MAX_INSTRUCTIONS_PER_FRAME = 1000; // حداکثر دستور در هر فریم
+static const int MAX_INSTRUCTIONS_PER_FRAME = 1000;
 static bool gShowHelp = false;          // نمایش راهنما
 static vector<string> gLogHistory;
 static string gBackdropFilePath = "";
+static bool gExtensionPanelOpen = false;
+static bool gPenExtensionEnabled = false;
 // تابع لاگ مرکزی
 static void LogEvent(const string& level, const string& message) {
     time_t now = time(nullptr);
@@ -98,6 +100,7 @@ static void LogEvent(const string& level, const string& message) {
         gLogHistory.erase(gLogHistory.begin());
     }
 }
+static int gSelectedSpriteIdx = 0;
 struct PenState {
     bool down = false;
     Uint8 r = 0, g = 0, b = 0, a = 255;
@@ -123,7 +126,7 @@ static BackdropItem gBackdropItems[] = {
     {"sunset",   "backdrops/sunset.png"},
 };
 static SDL_Renderer* gMainRenderer = nullptr;
-
+static unordered_map<string, vector<int>> gMessageHandlers;
 // ════════════════════════════════════════════
 //  Scaling system
 // ════════════════════════════════════════════
@@ -178,10 +181,10 @@ struct LayoutScale {
         if (fontScale < 1) fontScale = 1;
     }
 };
+static unordered_map<string, float> gVariables;
 static LayoutScale L;
 // Extension system
-static bool gExtensionPanelOpen = false;
-static bool gPenExtensionEnabled = false;
+
 // ════════════════════════════════════════════
 //  TTF Font System
 // ════════════════════════════════════════════
@@ -429,7 +432,37 @@ if (gBackdropPanelTab == 0) {
             "Open Editor", 255, 255, 255, 255);
     }
 }
+static void renderExtensionPanel(SDL_Renderer* rnd) {
+    if (!gExtensionPanelOpen) return;
 
+    // ابعاد پنل
+    int panelW = 400;
+    int panelH = 250;
+    int panelX = (L.winW - panelW) / 2;
+    int panelY = (L.winH - panelH) / 2;
+
+    // پس‌زمینه
+    fillRoundedRect(rnd, panelX, panelY, panelW, panelH, 10, 50, 50, 70, 255);
+    drawRoundedRectOutline(rnd, panelX, panelY, panelW, panelH, 10, 200, 200, 200, 255);
+
+    // عنوان
+    drawTextTTF(rnd, panelX + 20, panelY + 15, "Extensions", 255, 255, 255, 255, gFontLarge);
+
+    // دکمه بستن (X)
+    int closeSz = 24;
+    int closeBtnX = panelX + panelW - closeSz - 10;
+    int closeBtnY = panelY + 10;
+    fillRoundedRect(rnd, closeBtnX, closeBtnY, closeSz, closeSz, 5, 220, 60, 60, 255);
+    drawTextTTF(rnd, closeBtnX + 6, closeBtnY + 2, "X", 255, 255, 255, 255);
+
+    // دکمه افزونه Pen
+    int penBtnX = panelX + 50;
+    int penBtnY = panelY + 80;
+    int penBtnW = panelW - 100;
+    int penBtnH = 50;
+    fillRoundedRect(rnd, penBtnX, penBtnY, penBtnW, penBtnH, 8, 0, 180, 120, 255);
+    drawTextTTF(rnd, penBtnX + 20, penBtnY + 15, "Pen", 255, 255, 255, 255, gFontLarge);
+}
 
 // ════════════════════════════════════════════
 //  Category
@@ -541,7 +574,7 @@ struct OperatorSlot {
     float width, height;
     int embeddedBlockId;
 };
-
+static vector<int> gSpaceHandlers;
 struct Block {
     int id;
     int line;
@@ -550,13 +583,17 @@ struct Block {
     string text;
     float x, y;
     float w, h;
+    int endBlockId;
     bool inPalette;
+    int elseBlockId;
     int nextBlockId;
+    bool isMarker;
     int parentBlockId;
     int childHeadId;
     vector<InputField> inputs;
     vector<OperatorSlot> opSlots;
 };
+
 // ═══════════════════════════════════════════
 //  EXECUTION ENGINE - Script Thread
 // ═══════════════════════════════════════════
@@ -567,11 +604,12 @@ struct ScriptThread {
     bool isWaiting;        // آیا منتظره؟
     int repeatCounter;       // شمارنده repeat
     vector<pair<int,int>> loopStack;  // stack برای حلقه‌ها: (blockId, counter)
-
+    vector<int> ifReturnStack;
     ScriptThread(int blockId, int sprite)
         : currentBlockId(blockId), spriteIdx(sprite),
           waitTimer(0), isWaiting(false), repeatCounter(0) {}
 };
+
 static float safeDivide(float numerator, float denominator) {
     if (denominator == 0) {
         LogEvent("ERROR", "Division by zero attempted!");
@@ -679,121 +717,357 @@ static vector<Block> buildPaletteBlocks() {
     float bw = L.BLOCK_WIDTH, bh = L.BLOCK_HEIGHT;
     float fieldH = bh * 0.55f, fieldW = bw * 0.2f, slotW = bw * 0.25f;
 
-    // MOTION
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "move  steps", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.25f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "turn R  deg", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"15")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "turn L  deg", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"15")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "go to x:  y: ", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"0"),makeInput(bw*0.65f,bh*0.15f,fieldW,fieldH,"0")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH),makeOpSlot(bw*0.65f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "glide  s x:  y: ", 0,0,true, {makeInput(bw*0.28f,bh*0.15f,fieldW*0.7f,fieldH,"1"),makeInput(bw*0.5f,bh*0.15f,fieldW*0.7f,fieldH,"0"),makeInput(bw*0.72f,bh*0.15f,fieldW*0.7f,fieldH,"0")}, {}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "set x to ", 0,0,true, {makeInput(bw*0.5f,bh*0.15f,fieldW,fieldH,"0")}, {makeOpSlot(bw*0.5f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "set y to ", 0,0,true, {makeInput(bw*0.5f,bh*0.15f,fieldW,fieldH,"0")}, {makeOpSlot(bw*0.5f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "change x by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "change y by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "point dir ", 0,0,true, {makeInput(bw*0.55f,bh*0.15f,fieldW,fieldH,"90")}, {makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
+    // -------------------- MOTION --------------------
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "move  steps", 0,0,true,
+        {makeInput(bw*0.25f, bh*0.15f, fieldW, fieldH, "10")},
+        {makeOpSlot(bw*0.25f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "turn R  deg", 0,0,true,
+        {makeInput(bw*0.35f, bh*0.15f, fieldW, fieldH, "15")},
+        {makeOpSlot(bw*0.35f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "turn L  deg", 0,0,true,
+        {makeInput(bw*0.35f, bh*0.15f, fieldW, fieldH, "15")},
+        {makeOpSlot(bw*0.35f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "go to x:  y: ", 0,0,true,
+        {makeInput(bw*0.35f, bh*0.15f, fieldW, fieldH, "0"),
+         makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "0")},
+        {makeOpSlot(bw*0.35f, bh*0.15f, slotW, fieldH),
+         makeOpSlot(bw*0.65f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "glide  s x:  y: ", 0,0,true,
+        {makeInput(bw*0.28f, bh*0.15f, fieldW*0.7f, fieldH, "1"),
+         makeInput(bw*0.5f,  bh*0.15f, fieldW*0.7f, fieldH, "0"),
+         makeInput(bw*0.72f, bh*0.15f, fieldW*0.7f, fieldH, "0")},
+        {makeOpSlot(bw*0.28f, bh*0.15f, slotW, fieldH),
+         makeOpSlot(bw*0.5f,  bh*0.15f, slotW, fieldH),
+         makeOpSlot(bw*0.72f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "set x to ", 0,0,true,
+        {makeInput(bw*0.5f, bh*0.15f, fieldW, fieldH, "0")},
+        {makeOpSlot(bw*0.5f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "set y to ", 0,0,true,
+        {makeInput(bw*0.5f, bh*0.15f, fieldW, fieldH, "0")},
+        {makeOpSlot(bw*0.5f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "change x by ", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "10")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "change y by ", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "10")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "point dir ", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "90")},
+        {makeOpSlot(bw*0.55f, bh*0.15f, slotW, fieldH)}));
+
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "go to random", 0,0,true, {}, {}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "go to mouse", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "x position", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "y position", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "direction", 0,0,true,{},{}));
 
-    // LOOKS
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "say  for  s", 0,0,true, {makeInput(bw*0.2f,bh*0.15f,fieldW*1.2f,fieldH,"Hello!"),makeInput(bw*0.6f,bh*0.15f,fieldW*0.7f,fieldH,"2")}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "say ", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW*1.5f,fieldH,"Hello!")}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "think  for  s", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW*1.2f,fieldH,"Hmm..."),makeInput(bw*0.65f,bh*0.15f,fieldW*0.7f,fieldH,"2")}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "show", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "hide", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "set size to %", 0,0,true, {makeInput(bw*0.55f,bh*0.15f,fieldW,fieldH,"100")}, {makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "change size by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "next costume", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "switch costume to", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"1")}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "switch backdrop to", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"default")}, {}));
+    // Reporter‌های حرکتی
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "x position", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "y position", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "direction", 0,0,true, {}, {}));
+
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "if on edge, bounce", 0,0,true, {}, {}));
+
+    // -------------------- LOOKS --------------------
+    // say for
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "say  for  s", 0,0,true,
+        {makeInput(bw*0.2f, bh*0.15f, fieldW*1.2f, fieldH, "Hello!"),
+         makeInput(bw*0.6f, bh*0.15f, fieldW*0.7f, fieldH, "2")},
+        {makeOpSlot(bw*0.2f, bh*0.15f, fieldW*1.2f, fieldH),
+         makeOpSlot(bw*0.6f, bh*0.15f, fieldW*0.7f, fieldH)}));
+
+    // say (بدون زمان)
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "say ", 0,0,true,
+        {makeInput(bw*0.25f, bh*0.15f, fieldW*1.5f, fieldH, "Hello!")},
+        {makeOpSlot(bw*0.25f, bh*0.15f, fieldW*1.5f, fieldH)}));
+
+    // think for
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "think  for  s", 0,0,true,
+        {makeInput(bw*0.25f, bh*0.15f, fieldW*1.2f, fieldH, "Hmm..."),
+         makeInput(bw*0.65f, bh*0.15f, fieldW*0.7f, fieldH, "2")},
+        {makeOpSlot(bw*0.25f, bh*0.15f, fieldW*1.2f, fieldH),
+         makeOpSlot(bw*0.65f, bh*0.15f, fieldW*0.7f, fieldH)}));
+
+    // think
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "think ", 0,0,true,
+        {makeInput(bw*0.3f, bh*0.15f, fieldW*1.5f, fieldH, "Hmm...")},
+        {makeOpSlot(bw*0.3f, bh*0.15f, fieldW*1.5f, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "show", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "hide", 0,0,true, {}, {}));
+
+    // set size to %
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "set size to %", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "100")},
+        {makeOpSlot(bw*0.55f, bh*0.15f, slotW, fieldH)}));
+
+    // change size by
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "change size by ", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "10")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, slotW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "next costume", 0,0,true, {}, {}));
+
+    // switch costume to
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "switch costume to", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "1")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, fieldW, fieldH)}));
+
+    // switch backdrop to
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "switch backdrop to", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "default")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, fieldW, fieldH)}));
+
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "next backdrop", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "costume #", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "size", 0,0,true,{},{}));
+
+    // گزارشگرهای looks
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "costume #", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "size", 0,0,true, {}, {}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "backdrop name", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "change color effect by", 0,0,true, {makeInput(bw*0.7f,bh*0.15f,fieldW,fieldH,"25")}, {}));
-    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "set color effect to", 0,0,true, {makeInput(bw*0.7f,bh*0.15f,fieldW,fieldH,"0")}, {}));
+
+    // change color effect by
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "change color effect by", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "25")},
+        {makeOpSlot(bw*0.7f, bh*0.15f, slotW, fieldH)}));
+
+    // set color effect to
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "set color effect to", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "0")},
+        {makeOpSlot(bw*0.7f, bh*0.15f, slotW, fieldH)}));
+
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "clear graphic effects", 0,0,true, {}, {}));
-    // SOUND
-    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "play sound", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "stop sounds", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "set vol to %", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"100")},{}));
-    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "change vol by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"-10")},{}));
-    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::REPORTER, "volume", 0,0,true,{},{}));
 
-    // EVENTS
-    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when flag clicked", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when space pressed", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when sprite clicked", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::COMMAND, "broadcast ", 0,0,true, {makeInput(bw*0.5f,bh*0.15f,fieldW*1.2f,fieldH,"msg1")},{}));
-    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when I receive ", 0,0,true, {makeInput(bw*0.65f,bh*0.15f,fieldW*1.0f,fieldH,"msg1")},{}));
+    // لایه‌ها
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "go to front layer", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "go to back layer", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "go forward layers", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "1")},
+        {makeOpSlot(bw*0.7f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "go backward layers", 0,0,true,
+        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "1")},
+        {makeOpSlot(bw*0.7f, bh*0.15f, slotW, fieldH)}));
 
-    // CONTROL
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::COMMAND, "wait  secs", 0,0,true, {makeInput(bw*0.27f,bh*0.15f,fieldW,fieldH,"1")}, {makeOpSlot(bw*0.27f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "repeat ", 0,0,true, {makeInput(bw*0.4f,bh*0.05f,fieldW,fieldH*0.8f,"10")}, {makeOpSlot(bw*0.4f,bh*0.05f,slotW,fieldH*0.8f)}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "forever", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "if  then", 0,0,true, {}, {makeOpSlot(bw*0.2f,bh*0.05f,slotW*1.5f,fieldH*0.8f)}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "if  else", 0,0,true, {}, {makeOpSlot(bw*0.2f,bh*0.05f,slotW*1.5f,fieldH*0.8f)}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::CAP, "stop all", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::COMMAND, "wait until ", 0,0,true, {}, {makeOpSlot(bw*0.5f,bh*0.15f,slotW*1.3f,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "repeat until ", 0,0,true, {}, {makeOpSlot(bw*0.55f,bh*0.05f,slotW*1.3f,fieldH*0.8f)}));
+    // -------------------- SOUND --------------------
+    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "play sound", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "stop sounds", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "set vol to %", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "100")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "change vol by ", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "-10")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::REPORTER, "volume", 0,0,true, {}, {}));
 
-    // SENSING
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "touching edge?", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "touching mouse?", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "mouse x", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "mouse y", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "mouse down?", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "key  pressed?", 0,0,true, {makeInput(bw*0.25f,bh*0.15f,fieldW,fieldH,"space")},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "timer", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::COMMAND, "reset timer", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::COMMAND, "ask  and wait", 0,0,true, {makeInput(bw*0.2f,bh*0.15f,fieldW*1.5f,fieldH,"What?")},{}));
-    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "answer", 0,0,true,{},{}));
+    // -------------------- EVENTS --------------------
+    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when flag clicked", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when space pressed", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when sprite clicked", 0,0,true, {}, {}));
 
-    // OPERATORS
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  +  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  -  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  *  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  /  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "pick rand  to ", 0,0,true, {makeInput(bw*0.42f,bh*0.15f,fieldW*0.7f,fieldH,"1"),makeInput(bw*0.72f,bh*0.15f,fieldW*0.7f,fieldH,"10")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "  <  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "  =  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "  >  ", 0,0,true, {makeInput(bw*0.05f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.55f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, " and ", 0,0,true, {}, {makeOpSlot(bw*0.0f,bh*0.15f,slotW,fieldH),makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, " or ", 0,0,true, {}, {makeOpSlot(bw*0.0f,bh*0.15f,slotW,fieldH),makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "not ", 0,0,true, {}, {makeOpSlot(bw*0.25f,bh*0.15f,slotW*1.3f,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "mod  / ", 0,0,true, {makeInput(bw*0.2f,bh*0.15f,fieldW*0.8f,fieldH,""),makeInput(bw*0.6f,bh*0.15f,fieldW*0.8f,fieldH,"")},{}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "round ", 0,0,true, {makeInput(bw*0.35f,bh*0.15f,fieldW,fieldH,"")}, {makeOpSlot(bw*0.35f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "abs of ", 0,0,true, {makeInput(bw*0.4f,bh*0.15f,fieldW,fieldH,"")}, {makeOpSlot(bw*0.4f,bh*0.15f,slotW,fieldH)}));
+    // broadcast
+    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::COMMAND, "broadcast ", 0,0,true,
+        {makeInput(bw*0.5f, bh*0.15f, fieldW*1.2f, fieldH, "msg1")},
+        {makeOpSlot(bw*0.5f, bh*0.15f, fieldW*1.2f, fieldH)}));
 
-    // VARIABLES
-    blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::REPORTER, "my variable", 0,0,true,{},{}));
-    blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::COMMAND, "set var to ", 0,0,true, {makeInput(bw*0.55f,bh*0.15f,fieldW,fieldH,"0")}, {makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
-    blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::COMMAND, "change var by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"1")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
-    // PEN BLOCKS
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "erase all", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "stamp", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "pen down", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "pen up", 0,0,true, {}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen color to", 0,0,true,
-        {makeInput(bw*0.65f, bh*0.15f, fieldW*1.0f, fieldH, "#00FF00")}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen size to", 0,0,true,
-        {makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "1")}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "change pen size by", 0,0,true,
-        {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "1")}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen brightness to", 0,0,true,
-        {makeInput(bw*0.75f, bh*0.15f, fieldW, fieldH, "100")}, {}));
-    blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen saturation to", 0,0,true,
-        {makeInput(bw*0.75f, bh*0.15f, fieldW, fieldH, "100")}, {}));
+    // when I receive
+    blocks.push_back(makeBlock(id++, Category::EVENTS, BlockShape::HAT, "when I receive ", 0,0,true,
+        {makeInput(bw*0.65f, bh*0.15f, fieldW*1.0f, fieldH, "msg1")},
+        {}));  // HAT معمولاً slot ندارد، ورودی متنی است.
+
+    // -------------------- CONTROL --------------------
+    // wait secs
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::COMMAND, "wait  secs", 0,0,true,
+        {makeInput(bw*0.27f, bh*0.15f, fieldW, fieldH, "1")},
+        {makeOpSlot(bw*0.27f, bh*0.15f, slotW, fieldH)}));
+
+    // repeat
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "repeat ", 0,0,true,
+        {makeInput(bw*0.4f, bh*0.05f, fieldW, fieldH*0.8f, "10")},
+        {makeOpSlot(bw*0.4f, bh*0.05f, slotW, fieldH*0.8f)}));
+
+    // forever
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "forever", 0,0,true, {}, {}));
+
+    // if then
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "if  then", 0,0,true,
+        {}, {makeOpSlot(bw*0.2f, bh*0.05f, slotW*1.5f, fieldH*0.8f)}));
+
+    // if else
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "if  else", 0,0,true,
+        {}, {makeOpSlot(bw*0.2f, bh*0.05f, slotW*1.5f, fieldH*0.8f)}));
+
+    // stop all
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::CAP, "stop all", 0,0,true, {}, {}));
+
+    // wait until
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::COMMAND, "wait until ", 0,0,true,
+        {}, {makeOpSlot(bw*0.5f, bh*0.15f, slotW*1.3f, fieldH)}));
+
+    // repeat until
+    blocks.push_back(makeBlock(id++, Category::CONTROL, BlockShape::C_BLOCK, "repeat until ", 0,0,true,
+        {}, {makeOpSlot(bw*0.55f, bh*0.05f, slotW*1.3f, fieldH*0.8f)}));
+
+    // -------------------- SENSING --------------------
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "touching edge?", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "touching mouse?", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "mouse x", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "mouse y", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "mouse down?", 0,0,true, {}, {}));
+
+    // key pressed?
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::BOOLEAN, "key  pressed?", 0,0,true,
+        {makeInput(bw*0.25f, bh*0.15f, fieldW, fieldH, "space")},
+        {makeOpSlot(bw*0.25f, bh*0.15f, fieldW, fieldH)}));
+
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "timer", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::COMMAND, "reset timer", 0,0,true, {}, {}));
+
+    // ask and wait
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::COMMAND, "ask  and wait", 0,0,true,
+        {makeInput(bw*0.2f, bh*0.15f, fieldW*1.5f, fieldH, "What?")},
+        {makeOpSlot(bw*0.2f, bh*0.15f, fieldW*1.5f, fieldH)}));
+
+    // answer
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "answer", 0,0,true, {}, {}));
+
+    // distance to mouse (اختیاری)
+    blocks.push_back(makeBlock(id++, Category::SENSING, BlockShape::REPORTER, "distance to mouse", 0,0,true, {}, {}));
+
+    // -------------------- OPERATORS --------------------
+    // عملگرهای دوتایی
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  +  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  -  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  *  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "  /  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+
+    // pick random
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "pick rand  to ", 0,0,true,
+        {makeInput(bw*0.42f, bh*0.15f, fieldW*0.7f, fieldH, "1"),
+         makeInput(bw*0.72f, bh*0.15f, fieldW*0.7f, fieldH, "10")}, {}));
+
+    // مقایسه‌ای
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "  <  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "  =  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "  >  ", 0,0,true,
+        {makeInput(bw*0.05f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.55f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+
+    // and, or, not
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, " and ", 0,0,true, {},
+        {makeOpSlot(bw*0.0f, bh*0.15f, slotW, fieldH),
+         makeOpSlot(bw*0.55f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, " or ", 0,0,true, {},
+        {makeOpSlot(bw*0.0f, bh*0.15f, slotW, fieldH),
+         makeOpSlot(bw*0.55f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::BOOLEAN, "not ", 0,0,true, {},
+        {makeOpSlot(bw*0.25f, bh*0.15f, slotW*1.3f, fieldH)}));
+
+    // mod, round, abs of
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "mod  / ", 0,0,true,
+        {makeInput(bw*0.2f, bh*0.15f, fieldW*0.8f, fieldH, ""),
+         makeInput(bw*0.6f, bh*0.15f, fieldW*0.8f, fieldH, "")}, {}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "round ", 0,0,true,
+        {makeInput(bw*0.35f, bh*0.15f, fieldW, fieldH, "")},
+        {makeOpSlot(bw*0.35f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::OPERATORS, BlockShape::REPORTER, "abs of ", 0,0,true,
+        {makeInput(bw*0.4f, bh*0.15f, fieldW, fieldH, "")},
+        {makeOpSlot(bw*0.4f, bh*0.15f, slotW, fieldH)}));
+
+    // -------------------- VARIABLES --------------------
+    blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::REPORTER, "my variable", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::COMMAND, "set var to ", 0,0,true,
+        {makeInput(bw*0.55f, bh*0.15f, fieldW, fieldH, "0")},
+        {makeOpSlot(bw*0.55f, bh*0.15f, slotW, fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::VARIABLES, BlockShape::COMMAND, "change var by ", 0,0,true,
+        {makeInput(bw*0.6f, bh*0.15f, fieldW, fieldH, "1")},
+        {makeOpSlot(bw*0.6f, bh*0.15f, slotW, fieldH)}));
+
+    // -------------------- PEN (فقط در صورت فعال بودن افزونه) --------------------
+    if (gPenExtensionEnabled) {
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "erase all", 0,0,true, {}, {}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "stamp", 0,0,true, {}, {}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "pen down", 0,0,true, {}, {}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "pen up", 0,0,true, {}, {}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen color to", 0,0,true,
+            {makeInput(bw*0.65f, bh*0.15f, fieldW*1.0f, fieldH, "#00FF00")},
+            {makeOpSlot(bw*0.65f, bh*0.15f, fieldW*1.0f, fieldH)}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen size to", 0,0,true,
+            {makeInput(bw*0.65f, bh*0.15f, fieldW, fieldH, "1")},
+            {makeOpSlot(bw*0.65f, bh*0.15f, slotW, fieldH)}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "change pen size by", 0,0,true,
+            {makeInput(bw*0.7f, bh*0.15f, fieldW, fieldH, "1")},
+            {makeOpSlot(bw*0.7f, bh*0.15f, slotW, fieldH)}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen brightness to", 0,0,true,
+            {makeInput(bw*0.75f, bh*0.15f, fieldW, fieldH, "100")},
+            {makeOpSlot(bw*0.75f, bh*0.15f, slotW, fieldH)}));
+        blocks.push_back(makeBlock(id++, Category::PEN, BlockShape::COMMAND, "set pen saturation to", 0,0,true,
+            {makeInput(bw*0.75f, bh*0.15f, fieldW, fieldH, "100")},
+            {makeOpSlot(bw*0.75f, bh*0.15f, slotW, fieldH)}));
+    }
+
     gNextBlockId = id + 100;
     return blocks;
 }
-
 static Block* findBlock(vector<Block>& blocks, int id) {
     for (auto& b : blocks) if (b.id == id) return &b;
     return nullptr;
 }
+static void preprocessBlocks(vector<Block>& blocks) {
+    // پیمایش همه‌ی بلوک‌ها (غیر پالت)
+    for (auto& b : blocks) {
+        if (b.inPalette) continue;
+        b.endBlockId = -1;
+        b.elseBlockId = -1;
+        b.isMarker = false;
+        static vector<int> gSpaceHandlers;
+        // اگر بلوک C‑شکل است، بدنه‌ی آن را پیمایش کن
+        if (b.shape == BlockShape::C_BLOCK) {
+            // پیدا کردن آخرین بلوک در زنجیره‌ی فرزندان
+            int lastChild = b.childHeadId;
+            if (lastChild != -1) {
+                while (true) {
+                    Block* child = findBlock(blocks, lastChild);
+                    if (!child) break;
+                    if (child->nextBlockId == -1) break;
+                    lastChild = child->nextBlockId;
+                }
+                // آخرین فرزند، endBlockId این بلوک را به nextBlockId خود بلوک C اشاره می‌دهد
+                // (البته این را در زمان اجرا هم می‌توانیم از خود b.nextBlockId بگیریم)
+            }
+            // برای if-else باید else marker را پیدا کنیم
+            if (b.text.find("else") != string::npos) {
+                // جستجوی بلوکی با متن "__ELSE__" در میان فرزندان
+                int child = b.childHeadId;
+                while (child != -1) {
+                    Block* cb = findBlock(blocks, child);
+                    if (cb && cb->text == "__ELSE__") {
+                        b.elseBlockId = child;
+                        break;
+                    }
+                    child = cb ? cb->nextBlockId : -1;
+                }
+            }
 
+        }
+    }
+}
 static float calcCBlockHeight(vector<Block>& blocks, Block& cb) {
     float barH = L.CBLOCK_BAR_H, mouthH = L.CBLOCK_MOUTH_H;
     float childrenH = 0;
@@ -807,6 +1081,7 @@ static float calcCBlockHeight(vector<Block>& blocks, Block& cb) {
     if (childrenH < mouthH) childrenH = mouthH;
     return barH + childrenH + barH;
 }
+
 
 static void updateCBlockChildren(vector<Block>& blocks, Block& cb) {
     float barH = L.CBLOCK_BAR_H, indent = 20 * L.s;
@@ -827,15 +1102,35 @@ static void updateCBlockChildren(vector<Block>& blocks, Block& cb) {
     cb.h = calcCBlockHeight(blocks, cb);
 }
 
-static Block cloneBlock(const Block& src, float x, float y) {
+static Block cloneBlock(const Block& src, float x, float y, vector<Block>& blocks) {
     Block b = src;
     b.id = gNextBlockId++;
     b.line = gNextLineNumber++;
     b.x = x; b.y = y;
     b.inPalette = false;
     b.nextBlockId = -1; b.parentBlockId = -1; b.childHeadId = -1;
+    b.elseBlockId = -1;
+    b.isMarker = false;
     for (auto& inp : b.inputs) inp.editing = false;
     for (auto& sl : b.opSlots) sl.embeddedBlockId = -1;
+
+    // اگر بلوک if-else است، یک بلوک نشانگر else به عنوان فرزند اول ایجاد کن
+    if (src.text.find("if  else") != string::npos) {
+        Block elseMarker;
+        elseMarker.id = gNextBlockId++;
+        elseMarker.text = "__ELSE__";
+        elseMarker.isMarker = true;
+        elseMarker.shape = BlockShape::COMMAND;
+        elseMarker.cat = src.cat;
+        elseMarker.x = b.x + 20 * L.s; // مقدار مناسب
+        elseMarker.y = b.y + L.CBLOCK_BAR_H;
+        elseMarker.w = 10; elseMarker.h = 10;
+        elseMarker.inPalette = false;
+        elseMarker.parentBlockId = b.id;
+        elseMarker.nextBlockId = -1;
+        blocks.push_back(elseMarker);
+        b.childHeadId = elseMarker.id;
+    }
     return b;
 }
 
@@ -1574,7 +1869,7 @@ static void trySnapBlocks(vector<Block>& blocks, int dragId) {
             for (auto& sl:other.opSlots) {
                 if (sl.embeddedBlockId>=0) continue;
                 float sx2=other.x+sl.relX,sy2=other.y+sl.relY;
-                if (abs(drag->x-sx2)<snapDist*0.7f&&abs(drag->y-sy2)<snapDist*0.7f) { drag->x=sx2;drag->y=sy2;sl.embeddedBlockId=dragId;drag->parentBlockId=other.id;return; }
+                if (abs(drag->x-sx2)<snapDist*1.5f && abs(drag->y-sy2)<snapDist*1.5f) { drag->x=sx2;drag->y=sy2;sl.embeddedBlockId=dragId;drag->parentBlockId=other.id;return; }
             }
         }
     }
@@ -1622,6 +1917,7 @@ static float getInputValue(Block& block, int inputIdx) {
             return 0;
         }
     }
+    LogEvent("WARNING", "Input index out of range in getInputValue");
     return 0;
 }
 
@@ -1632,9 +1928,230 @@ static string getInputString(Block& block, int inputIdx) {
     }
     return "";
 }
+static float getEffectiveInputValue(Block& block, int inputIdx, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx);
+static string getEffectiveInputString(Block& block, int inputIdx, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx);
+// ارزیابی یک بلوک گزارشگر عددی
+static float evaluateReporterFloat(Block* block, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx) {
+    if (!block) return 0;
+    string txt = block->text;
+    Sprite& sp = sprites[spriteIdx];
 
+    if (txt == "x position") return sp.x;
+    if (txt == "y position") return sp.y;
+    if (txt == "direction") return sp.direction;
+    if (txt == "size") return sp.size;
+    if (txt.find("costume #") != string::npos) return sp.currentCostume + 1;
+    if (txt == "timer") return gTimer;
+    if (txt == "mouse x") {
+        int mx, my;
+        SDL_GetMouseState(&mx, &my);
+        int stageX = L.PALETTE_WIDTH, stageY = L.TOOLBAR_HEIGHT;
+        int centerX = stageX + L.STAGE_WIDTH / 2, centerY = stageY + L.STAGE_HEIGHT / 2;
+        return (float)(mx - centerX);
+    }
+    if (txt == "mouse y") {
+        int mx, my;
+        SDL_GetMouseState(&mx, &my);
+        int stageX = L.PALETTE_WIDTH, stageY = L.TOOLBAR_HEIGHT;
+        int centerX = stageX + L.STAGE_WIDTH / 2, centerY = stageY + L.STAGE_HEIGHT / 2;
+        return (float)(centerY - my);
+    }
+    else if (txt == "  +  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return left + right;
+}
+    else if (txt.find("key  pressed?") != string::npos) {
+        string keyName = getEffectiveInputString(*block, 0, blocks, sprites, spriteIdx);
+        SDL_Scancode code;
+        if (keyName == "space") code = SDL_SCANCODE_SPACE;
+        else if (keyName == "left") code = SDL_SCANCODE_LEFT;
+        else if (keyName == "right") code = SDL_SCANCODE_RIGHT;
+        else if (keyName == "up") code = SDL_SCANCODE_UP;
+        else if (keyName == "down") code = SDL_SCANCODE_DOWN;
+        // ... بقیه کلیدها
+        else code = SDL_SCANCODE_UNKNOWN;
+        if (code != SDL_SCANCODE_UNKNOWN && gKeyboardState[code])
+            return 1;
+        else
+            return 0;
+    }
+    else if (txt == "touching edge?") {
+        float halfW = L.STAGE_WIDTH / 2.0f;
+        float halfH = L.STAGE_HEIGHT / 2.0f;
+        Sprite& sp = sprites[spriteIdx];
+        if (sp.x <= -halfW || sp.x >= halfW || sp.y <= -halfH || sp.y >= halfH)
+            return 1;
+        else
+            return 0;
+    }
+    else if (txt == "touching mouse?") {
+        int mx, my;
+        SDL_GetMouseState(&mx, &my);
+        int stageX = L.PALETTE_WIDTH, stageY = L.TOOLBAR_HEIGHT;
+        int centerX = stageX + L.STAGE_WIDTH/2, centerY = stageY + L.STAGE_HEIGHT/2;
+        Sprite& sp = sprites[spriteIdx];
+        int sx = centerX + (int)sp.x, sy = centerY - (int)sp.y;
+        int sz = (int)(30 * L.s * sp.size / 100.0f);
+        if (mx >= sx - sz/2 && mx <= sx + sz/2 && my >= sy - sz/2 && my <= sy + sz/2)
+            return 1;
+        else
+            return 0;
+    }
+else if (txt == "  -  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return left - right;
+}
+else if (txt == "  *  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return left * right;
+}
+else if (txt == "  /  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    if (right == 0) {
+        LogEvent("ERROR", "Division by zero in operator");
+        return 0;
+    }
+    return left / right;
+}
+else if (txt == "  <  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return (left < right) ? 1 : 0;
+}
+else if (txt == "  =  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return (left == right) ? 1 : 0;
+}
+else if (txt == "  >  ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return (left > right) ? 1 : 0;
+}
+else if (txt == " and ") {
+    // و: دو ورودی boolean
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return (left != 0 && right != 0) ? 1 : 0;
+}
+else if (txt == " or ") {
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    return (left != 0 || right != 0) ? 1 : 0;
+}
+else if (txt == "not ") {
+    float val = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    return (val == 0) ? 1 : 0;
+}
+else if (txt.find("mod") != string::npos) {
+    // mod  /   (دو ورودی)
+    float left = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float right = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    if (right == 0) {
+        LogEvent("ERROR", "Modulo by zero");
+        return 0;
+    }
+    return fmod(left, right);
+}
+else if (txt.find("round") != string::npos) {
+    float val = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    return round(val);
+}
+else if (txt.find("abs of") != string::npos) {
+    float val = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    return fabs(val);
+}
+else if (txt.find("pick rand") != string::npos) {
+    float from = getEffectiveInputValue(*block, 0, blocks, sprites, spriteIdx);
+    float to = getEffectiveInputValue(*block, 1, blocks, sprites, spriteIdx);
+    if (from > to) swap(from, to);
+    return from + (rand() / (RAND_MAX / (to - from)));
+}
+else if (txt == "distance to mouse") {
+    int mx, my;
+    SDL_GetMouseState(&mx, &my);
+    int stageX = L.PALETTE_WIDTH, stageY = L.TOOLBAR_HEIGHT;
+    int centerX = stageX + L.STAGE_WIDTH/2, centerY = stageY + L.STAGE_HEIGHT/2;
+    Sprite& sp = sprites[spriteIdx];
+    int sx = centerX + (int)sp.x, sy = centerY - (int)sp.y;
+    float dx = mx - sx;
+    float dy = my - sy;
+    return sqrt(dx*dx + dy*dy);
+}
+    // می‌توانید سایر گزارشگرها را نیز اضافه کنید
+    return 0;
+}
+
+// ارزیابی یک بلوک گزارشگر رشته‌ای
+static string evaluateReporterString(Block* block, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx) {
+    if (!block) return "";
+    string txt = block->text;
+    Sprite& sp = sprites[spriteIdx];
+
+    if (txt == "backdrop name") return gCurrentBackdropName;
+    if (txt.find("costume") != string::npos) return to_string(sp.currentCostume + 1);
+    if (txt == "answer") return ""; // در صورت نیاز پیاده‌سازی کنید
+    return "";
+}
+static float getEffectiveInputValue(Block& block, int inputIdx, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx) {
+    if (inputIdx < 0 || inputIdx >= (int)block.inputs.size()) return 0;
+    float relX = block.inputs[inputIdx].relX;
+    float relY = block.inputs[inputIdx].relY;
+
+    for (auto& slot : block.opSlots) {
+        if (abs(slot.relX - relX) < 5 && abs(slot.relY - relY) < 5) {
+            if (slot.embeddedBlockId != -1) {
+                Block* emb = findBlock(blocks, slot.embeddedBlockId);
+                if (emb) return evaluateReporterFloat(emb, blocks, sprites, spriteIdx);
+            }
+            break;
+        }
+    }
+    return getInputValue(block, inputIdx);
+}
+static bool evaluateCondition(Block* block, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx) {
+    if (!block) return false;
+    // اگر بلوک boolean مستقیماً در slot قرار گرفته، باید آن را ارزیابی کنیم
+    // اینجا فرض می‌کنیم شرط به صورت یک بلوک boolean یا reporter در opSlot[0] است
+    if (block->opSlots.size() > 0 && block->opSlots[0].embeddedBlockId != -1) {
+        Block* cond = findBlock(blocks, block->opSlots[0].embeddedBlockId);
+        if (cond) {
+            // ارزیابی بلوک boolean
+            if (cond->shape == BlockShape::BOOLEAN) {
+                // اینجا باید مقدار boolean را برگردانیم (مثلاً از روی متن)
+                // ساده‌سازی: فقط true برگردان
+                return true;
+            } else {
+                // reporter عددی: 0 = false, غیرصفر = true
+                return evaluateReporterFloat(cond, blocks, sprites, spriteIdx) != 0;
+            }
+        }
+    }
+    return false;
+}
+static string getEffectiveInputString(Block& block, int inputIdx, vector<Block>& blocks, vector<Sprite>& sprites, int spriteIdx) {
+    if (inputIdx < 0 || inputIdx >= (int)block.inputs.size()) return "";
+    float relX = block.inputs[inputIdx].relX;
+    float relY = block.inputs[inputIdx].relY;
+
+    for (auto& slot : block.opSlots) {
+        if (abs(slot.relX - relX) < 5 && abs(slot.relY - relY) < 5) {
+            if (slot.embeddedBlockId != -1) {
+                Block* emb = findBlock(blocks, slot.embeddedBlockId);
+                if (emb) return evaluateReporterString(emb, blocks, sprites, spriteIdx);
+            }
+            break;
+        }
+    }
+    return getInputString(block, inputIdx);
+}
 // شروع اجرا با کلیک روی پرچم سبز
 static void startGreenFlag(vector<Block>& blocks, vector<Sprite>& sprites) {
+    preprocessBlocks(blocks);
     gActiveThreads.clear();
     gIsRunning = true;
     gTimer = 0;
@@ -1676,17 +2193,22 @@ static void penEraseAll(SDL_Renderer* rnd) {
 }
 
 static void penDrawLine(SDL_Renderer* rnd, float x1, float y1, float x2, float y2,
-                       Uint8 r, Uint8 g, Uint8 b, Uint8 a, float size) {
+                       Uint8 r, Uint8 g, Uint8 b, Uint8 a, float size, float brightness = 100.0f) {
+    // اعمال brightness
+    Uint8 finalR = (Uint8)(r * brightness / 100.0f);
+    Uint8 finalG = (Uint8)(g * brightness / 100.0f);
+    Uint8 finalB = (Uint8)(b * brightness / 100.0f);
+
     if (!gPenCanvas) return;
     SDL_SetRenderTarget(rnd, gPenCanvas);
     SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(rnd, r, g, b, a);
+    SDL_SetRenderDrawColor(rnd, finalR, finalG, finalB, a);
     int thickness = (int)size;
     for (int offset = -thickness/2; offset <= thickness/2; offset++) {
         aalineRGBA(rnd, (Sint16)(x1), (Sint16)(y1 + offset),
-                   (Sint16)(x2), (Sint16)(y2 + offset), r, g, b, a);
+                   (Sint16)(x2), (Sint16)(y2 + offset), finalR, finalG, finalB, a);
         aalineRGBA(rnd, (Sint16)(x1 + offset), (Sint16)(y1),
-                   (Sint16)(x2 + offset), (Sint16)(y2), r, g, b, a);
+                   (Sint16)(x2 + offset), (Sint16)(y2), finalR, finalG, finalB, a);
     }
     SDL_SetRenderTarget(rnd, nullptr);
 }
@@ -1734,6 +2256,18 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
         thread.waitTimer -= dt;
         if (thread.waitTimer > 0) return;  // هنوز صبر کن
         thread.isWaiting = false;
+
+        // پاک کردن حباب گفتار یا فکر مربوط به این اسپرایت (اگر فعال باشد)
+        Sprite& sp = sprites[thread.spriteIdx];
+        if (sp.sayTimer > 0) {
+            sp.sayText = "";
+            sp.sayTimer = 0;
+        }
+        if (sp.thinkTimer > 0) {
+            sp.thinkText = "";
+            sp.thinkTimer = 0;
+        }
+
         // برو به بلوک بعدی
         Block* b = findBlock(blocks, thread.currentBlockId);
         if (b) thread.currentBlockId = b->nextBlockId;
@@ -1749,6 +2283,7 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
 
     // چک کن sprite معتبر باشه
     if (thread.spriteIdx < 0 || thread.spriteIdx >= (int)sprites.size()) {
+        LogEvent("ERROR", "Invalid sprite index in thread");
         thread.currentBlockId = -1;
         return;
     }
@@ -1762,35 +2297,31 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
     if (txt.find("move") != string::npos && txt.find("steps") != string::npos) {
         projectModified = true;
         float oldX = sp.x, oldY = sp.y;
-        float steps = getInputValue(*block, 0);
+        float steps = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         float rad = (sp.direction - 90.0f) * 3.14159f / 180.0f;
         sp.x += cos(rad) * steps;
         sp.y -= sin(rad) * steps;
         clampSprite(sp);
-        penDrawFromSprite(sp, oldX, oldY);
-        penDrawFromSprite(sp, oldX, oldY);
-        penDrawFromSprite(sp, oldX, oldY);
         penDrawFromSprite(sp, oldX, oldY);
         LogEvent("INFO", "MOVE: steps=" + to_string(steps) + " from (" + to_string(oldX) + "," + to_string(oldY) + ") to (" + to_string(sp.x) + "," + to_string(sp.y) + ")");
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("turn") != string::npos && txt.find("R") != string::npos) {
         float oldDir = sp.direction;
-        sp.direction += getInputValue(*block, 0);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] TURN RIGHT: by " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldDir) + " to " + to_string(sp.direction));
+        sp.direction += getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] TURN RIGHT: by " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " from " + to_string(oldDir) + " to " + to_string(sp.direction));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("turn") != string::npos && txt.find("L") != string::npos) {
         float oldDir = sp.direction;
-        sp.direction -= getInputValue(*block, 0);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] TURN LEFT: by " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldDir) + " to " + to_string(sp.direction));
+        sp.direction -= getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] TURN LEFT: by " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " from " + to_string(oldDir) + " to " + to_string(sp.direction));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("go to random") != string::npos) {
         float oldX = sp.x, oldY = sp.y;
         float halfW = L.STAGE_WIDTH / 2.0f;
         float halfH = L.STAGE_HEIGHT / 2.0f;
-        // تولید مختصات تصادفی بین -halfW تا halfW و -halfH تا halfH
         sp.x = (float)(rand() % (int)(2 * halfW * 100)) / 100.0f - halfW;
         sp.y = (float)(rand() % (int)(2 * halfH * 100)) / 100.0f - halfH;
         clampSprite(sp);
@@ -1809,7 +2340,7 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
         int centerX = stageX + stageW / 2;
         int centerY = stageY + stageH / 2;
         sp.x = (float)(mx - centerX);
-        sp.y = (float)(centerY - my); // تبدیل مختصات صفحه به مختصات صحنه
+        sp.y = (float)(centerY - my);
         clampSprite(sp);
         penDrawFromSprite(sp, oldX, oldY);
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] GO TO MOUSE: from (" + to_string(oldX) + "," + to_string(oldY) + ") to (" + to_string(sp.x) + "," + to_string(sp.y) + ")");
@@ -1817,8 +2348,8 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
     }
     else if (txt.find("go to x") != string::npos) {
         float oldX = sp.x, oldY = sp.y;
-        sp.x = getInputValue(*block, 0);
-        sp.y = getInputValue(*block, 1);
+        sp.x = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        sp.y = getEffectiveInputValue(*block, 1, blocks, sprites, thread.spriteIdx);
         clampSprite(sp);
         penDrawFromSprite(sp, oldX, oldY);
         LogEvent("INFO", "GO TO: (" + to_string(sp.x) + "," + to_string(sp.y) + ") from (" + to_string(oldX) + "," + to_string(oldY) + ")");
@@ -1826,7 +2357,7 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
     }
     else if (txt.find("set x to") != string::npos) {
         float oldX = sp.x;
-        sp.x = getInputValue(*block, 0);
+        sp.x = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         clampSprite(sp);
         penDrawFromSprite(sp, oldX, sp.y);
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET X: to " + to_string(sp.x) + " from " + to_string(oldX));
@@ -1834,7 +2365,7 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
     }
     else if (txt.find("set y to") != string::npos) {
         float oldY = sp.y;
-        sp.y = getInputValue(*block, 0);
+        sp.y = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         clampSprite(sp);
         penDrawFromSprite(sp, sp.x, oldY);
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET Y: to " + to_string(sp.y) + " from " + to_string(oldY));
@@ -1842,37 +2373,83 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
     }
     else if (txt.find("change x by") != string::npos) {
         float oldX = sp.x;
-        sp.x += getInputValue(*block, 0);
+        sp.x += getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         clampSprite(sp);
         penDrawFromSprite(sp, oldX, sp.y);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE X BY: " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldX) + " to " + to_string(sp.x));
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE X BY: " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " from " + to_string(oldX) + " to " + to_string(sp.x));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("change y by") != string::npos) {
         float oldY = sp.y;
-        sp.y += getInputValue(*block, 0);
+        sp.y += getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         clampSprite(sp);
         penDrawFromSprite(sp, sp.x, oldY);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE Y BY: " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldY) + " to " + to_string(sp.y));
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE Y BY: " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " from " + to_string(oldY) + " to " + to_string(sp.y));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("point dir") != string::npos) {
         float oldDir = sp.direction;
-        sp.direction = getInputValue(*block, 0);
+        sp.direction = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] POINT DIR: to " + to_string(sp.direction) + " from " + to_string(oldDir));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("glide") != string::npos) {
         float oldX = sp.x, oldY = sp.y;
-        sp.x = getInputValue(*block, 1);
-        sp.y = getInputValue(*block, 2);
+        sp.x = getEffectiveInputValue(*block, 1, blocks, sprites, thread.spriteIdx);
+        sp.y = getEffectiveInputValue(*block, 2, blocks, sprites, thread.spriteIdx);
         clampSprite(sp);
-        LogEvent("INFO", "GLIDE: to (" + to_string(sp.x) + "," + to_string(sp.y) + ") from (" + to_string(oldX) + "," + to_string(oldY) + ") in " + to_string(getInputValue(*block, 0)) + " secs");
+        LogEvent("INFO", "GLIDE: to (" + to_string(sp.x) + "," + to_string(sp.y) + ") from (" + to_string(oldX) + "," + to_string(oldY) + ") in " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " secs");
         thread.isWaiting = true;
-        thread.waitTimer = getInputValue(*block, 0);
+        thread.waitTimer = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
     }
+    else if (txt.find("if on edge, bounce") != string::npos) {
+        float halfW = L.STAGE_WIDTH / 2.0f;
+        float halfH = L.STAGE_HEIGHT / 2.0f;
+        bool bounced = false;
+        if (sp.x > halfW) {
+            sp.x = halfW;
+            sp.direction = 180 - sp.direction; // بازگشت افقی
+            bounced = true;
+        } else if (sp.x < -halfW) {
+            sp.x = -halfW;
+            sp.direction = 180 - sp.direction;
+            bounced = true;
+        }
+        if (sp.y > halfH) {
+            sp.y = halfH;
+            sp.direction = -sp.direction; // بازگشت عمودی (جهت بر اساس محور y)
+            bounced = true;
+        } else if (sp.y < -halfH) {
+            sp.y = -halfH;
+            sp.direction = -sp.direction;
+            bounced = true;
+        }
+        // نرمال‌سازی جهت به 0-360
+        while (sp.direction < 0) sp.direction += 360;
+        while (sp.direction >= 360) sp.direction -= 360;
 
-    // PEN BLOCKS
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("broadcast") != string::npos) {
+        string msg = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+        for (int handlerId : gMessageHandlers[msg]) {
+            gActiveThreads.push_back(ScriptThread(handlerId, thread.spriteIdx));
+        }
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("change var by") != string::npos) {
+        float delta = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        gVariables["my variable"] += delta;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("change var by") != string::npos) {
+        float delta = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        gVariables["my variable"] += delta;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    // ════════════════════════════════
+    //  PEN BLOCKS
+    // ════════════════════════════════
     else if (txt == "pen down") {
         sp.penDown = true;
         thread.currentBlockId = block->nextBlockId;
@@ -1888,8 +2465,7 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("set pen color") != string::npos) {
-        // پارس رنگ hex مثل #FF0000
-        string colorStr = getInputString(*block, 0);
+        string colorStr = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
         if (colorStr.size() >= 7 && colorStr[0] == '#') {
             unsigned int hexColor = stoul(colorStr.substr(1), nullptr, 16);
             sp.penR = (hexColor >> 16) & 0xFF;
@@ -1899,30 +2475,42 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("set pen size") != string::npos) {
-        sp.penSize = getInputValue(*block, 0);
+        sp.penSize = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("change pen size") != string::npos) {
-        sp.penSize += getInputValue(*block, 0);
+        sp.penSize += getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         if (sp.penSize < 1) sp.penSize = 1;
         thread.currentBlockId = block->nextBlockId;
     }
-
+    else if (txt.find("set pen brightness to") != string::npos) {
+        sp.penBrightness = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("set pen saturation to") != string::npos) {
+        sp.penSaturation = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("set var to") != string::npos) {
+        float value = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        gVariables["my variable"] = value;
+        thread.currentBlockId = block->nextBlockId;
+    }
+    // (در صورت وجود بلوک‌های change برای brightness و saturation، مشابه اضافه کنید)
     // ════════════════════════════════
     //  LOOKS BLOCKS
     // ════════════════════════════════
     else if (txt.find("change color effect by") != string::npos) {
         float oldEffect = sp.colorEffect;
-        sp.colorEffect += getInputValue(*block, 0);
-        // محدود کردن به بازه 0 تا 100 (یا هر بازه دلخواه)
+        sp.colorEffect += getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         if (sp.colorEffect < 0) sp.colorEffect = 0;
         if (sp.colorEffect > 100) sp.colorEffect = 100;
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE COLOR EFFECT by " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldEffect) + " to " + to_string(sp.colorEffect));
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE COLOR EFFECT by " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " from " + to_string(oldEffect) + " to " + to_string(sp.colorEffect));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("set color effect to") != string::npos) {
         float oldEffect = sp.colorEffect;
-        sp.colorEffect = getInputValue(*block, 0);
+        sp.colorEffect = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         if (sp.colorEffect < 0) sp.colorEffect = 0;
         if (sp.colorEffect > 100) sp.colorEffect = 100;
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET COLOR EFFECT to " + to_string(sp.colorEffect) + " from " + to_string(oldEffect));
@@ -1934,92 +2522,93 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] CLEAR GRAPHIC EFFECTS");
         thread.currentBlockId = block->nextBlockId;
     }
-    else if (txt.find("say") != string::npos && txt.find("sec") == string::npos) {
-        projectModified = true;
-        sp.sayText = getInputString(*block, 0);
-        sp.sayTimer = -1;
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SAY: " + sp.sayText);
-        thread.currentBlockId = block->nextBlockId;
+    // بلوک SAY
+    else if (txt.find("say") != string::npos) {
+        if (block->inputs.size() >= 2) { // say for
+            sp.sayText = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+            sp.sayTimer = getEffectiveInputValue(*block, 1, blocks, sprites, thread.spriteIdx);
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] SAY FOR: " + sp.sayText + " for " + to_string(sp.sayTimer) + " secs");
+            thread.isWaiting = true;
+            thread.waitTimer = sp.sayTimer;
+        } else { // say ساده
+            sp.sayText = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+            sp.sayTimer = -1;
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] SAY: " + sp.sayText);
+            thread.currentBlockId = block->nextBlockId;
+        }
     }
-    else if (txt.find("say") != string::npos && txt.find("sec") != string::npos) {
-        sp.sayText = getInputString(*block, 0);
-        sp.sayTimer = getInputValue(*block, 1);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SAY FOR: " + sp.sayText + " for " + to_string(sp.sayTimer) + " secs");
-        thread.isWaiting = true;
-        thread.waitTimer = sp.sayTimer;
-    }
-    else if (txt.find("think") != string::npos && txt.find("sec") != string::npos) {
-        sp.thinkText = getInputString(*block, 0);
-        sp.thinkTimer = getInputValue(*block, 1);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] THINK FOR: " + sp.thinkText + " for " + to_string(sp.thinkTimer) + " secs");
-        thread.isWaiting = true;
-        thread.waitTimer = sp.thinkTimer;
-    }
+    // بلوک THINK
     else if (txt.find("think") != string::npos) {
-        sp.thinkText = getInputString(*block, 0);
-        sp.thinkTimer = -1;
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] THINK: " + sp.thinkText);
-        thread.currentBlockId = block->nextBlockId;
+        if (block->inputs.size() >= 2) { // think for
+            sp.thinkText = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+            sp.thinkTimer = getEffectiveInputValue(*block, 1, blocks, sprites, thread.spriteIdx);
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] THINK FOR: " + sp.thinkText + " for " + to_string(sp.thinkTimer) + " secs");
+            thread.isWaiting = true;
+            thread.waitTimer = sp.thinkTimer;
+        } else { // think ساده
+            sp.thinkText = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+            sp.thinkTimer = -1;
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] THINK: " + sp.thinkText);
+            thread.currentBlockId = block->nextBlockId;
+        }
     }
     else if (txt.find("switch costume to") != string::npos) {
-    string input = getInputString(*block, 0);
-    int newIndex = -1;
-    try {
-        newIndex = stoi(input) - 1; // شماره لباس از 1 شروع می‌شود
-    } catch (...) {
-        // در صورت نیاز می‌توانید بر اساس نام جستجو کنید
-    }
-    if (newIndex >= 0 && newIndex < (int)sp.costumes.size()) {
-        sp.currentCostume = newIndex;
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SWITCH COSTUME to " + input);
-    } else {
-        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Costume not found: " + input);
-    }
-    thread.currentBlockId = block->nextBlockId;
-}
-else if (txt.find("next costume") != string::npos) {
-    if (!sp.costumes.empty()) {
-        sp.currentCostume = (sp.currentCostume + 1) % (int)sp.costumes.size();
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] NEXT COSTUME to index " + to_string(sp.currentCostume+1));
-    } else {
-        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] No costumes");
-    }
-    thread.currentBlockId = block->nextBlockId;
-}
-else if (txt.find("switch backdrop to") != string::npos) {
-    string name = getInputString(*block, 0);
-    bool found = false;
-    for (int i = 0; i < gBackdropLibraryCount; i++) {
-        if (name == gBackdropItems[i].name) {
-            gCurrentBackdropName = name;
-            loadBackdrop(gMainRenderer, gBackdropItems[i].path);
-            found = true;
-            break;
+        string input = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+        int newIndex = -1;
+        try {
+            newIndex = stoi(input) - 1;
+        } catch (...) {}
+        if (newIndex >= 0 && newIndex < (int)sp.costumes.size()) {
+            sp.currentCostume = newIndex;
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] SWITCH COSTUME to " + input);
+        } else {
+            LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Costume not found: " + input);
         }
+        thread.currentBlockId = block->nextBlockId;
     }
-    if (!found) {
-        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Backdrop not found: " + name);
-    }
-    thread.currentBlockId = block->nextBlockId;
-}
-else if (txt.find("next backdrop") != string::npos) {
-    int currentIdx = -1;
-    for (int i = 0; i < gBackdropLibraryCount; i++) {
-        if (gCurrentBackdropName == gBackdropItems[i].name) {
-            currentIdx = i;
-            break;
+    else if (txt.find("next costume") != string::npos) {
+        if (!sp.costumes.empty()) {
+            sp.currentCostume = (sp.currentCostume + 1) % (int)sp.costumes.size();
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] NEXT COSTUME to index " + to_string(sp.currentCostume+1));
+        } else {
+            LogEvent("WARNING", "[Line:" + to_string(block->line) + "] No costumes");
         }
+        thread.currentBlockId = block->nextBlockId;
     }
-    if (currentIdx >= 0) {
-        int nextIdx = (currentIdx + 1) % gBackdropLibraryCount;
-        gCurrentBackdropName = gBackdropItems[nextIdx].name;
-        loadBackdrop(gMainRenderer, gBackdropItems[nextIdx].path);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] NEXT BACKDROP to " + gCurrentBackdropName);
-    } else {
-        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Cannot cycle custom backdrop");
+    else if (txt.find("switch backdrop to") != string::npos) {
+        string name = getEffectiveInputString(*block, 0, blocks, sprites, thread.spriteIdx);
+        bool found = false;
+        for (int i = 0; i < gBackdropLibraryCount; i++) {
+            if (name == gBackdropItems[i].name) {
+                gCurrentBackdropName = name;
+                loadBackdrop(gMainRenderer, gBackdropItems[i].path);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Backdrop not found: " + name);
+        }
+        thread.currentBlockId = block->nextBlockId;
     }
-    thread.currentBlockId = block->nextBlockId;
-}
+    else if (txt.find("next backdrop") != string::npos) {
+        int currentIdx = -1;
+        for (int i = 0; i < gBackdropLibraryCount; i++) {
+            if (gCurrentBackdropName == gBackdropItems[i].name) {
+                currentIdx = i;
+                break;
+            }
+        }
+        if (currentIdx >= 0) {
+            int nextIdx = (currentIdx + 1) % gBackdropLibraryCount;
+            gCurrentBackdropName = gBackdropItems[nextIdx].name;
+            loadBackdrop(gMainRenderer, gBackdropItems[nextIdx].path);
+            LogEvent("INFO", "[Line:" + to_string(block->line) + "] NEXT BACKDROP to " + gCurrentBackdropName);
+        } else {
+            LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Cannot cycle custom backdrop");
+        }
+        thread.currentBlockId = block->nextBlockId;
+    }
     else if (txt == "show") {
         sp.visible = true;
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] SHOW");
@@ -2032,74 +2621,252 @@ else if (txt.find("next backdrop") != string::npos) {
     }
     else if (txt.find("set size") != string::npos) {
         float oldSize = sp.size;
-        sp.size = getInputValue(*block, 0);
+        sp.size = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
         LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET SIZE: to " + to_string(sp.size) + " from " + to_string(oldSize));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("change size") != string::npos) {
         float oldSize = sp.size;
-        sp.size += getInputValue(*block, 0);
-        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE SIZE BY: " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldSize) + " to " + to_string(sp.size));
+        sp.size += getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE SIZE BY: " + to_string(getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx)) + " from " + to_string(oldSize) + " to " + to_string(sp.size));
         thread.currentBlockId = block->nextBlockId;
     }
 
+// ========== CONTROL BLOCKS ==========
 
-    // ════════════════════════════════
-    //  CONTROL BLOCKS
-    // ════════════════════════════════
-    else if (txt.find("wait") != string::npos && txt.find("sec") != string::npos) {
+// wait secs (فعلی)
+else if (txt.find("wait") != string::npos && txt.find("sec") != string::npos && txt.find("until") == string::npos) {
+    thread.isWaiting = true;
+    thread.waitTimer = getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+}
+// wait until
+else if (txt.find("wait until") != string::npos) {
+    if (evaluateCondition(block, blocks, sprites, thread.spriteIdx)) {
+        // شرط برقرار است → برو به بلوک بعدی
+        thread.currentBlockId = block->nextBlockId;
+    } else {
+        // شرط برقرار نیست → در همین خط بمان (با یک تأخیر کوچک)
         thread.isWaiting = true;
-        thread.waitTimer = getInputValue(*block, 0);
+        thread.waitTimer = 0.016f; // یک فریم صبر کن
     }
-    else if (txt == "forever") {
-        // اگه فرزند داره، برو داخلش
-        if (block->childHeadId != -1) {
-            thread.loopStack.push_back({block->id, -1});  // -1 یعنی بی‌نهایت
-            thread.currentBlockId = block->childHeadId;
-        } else {
-            // forever خالی - همینجا بمون (infinite loop)
-            // برای جلوگیری از freeze، یه تاخیر کوچیک بذار
-            thread.isWaiting = true;
-            thread.waitTimer = 0.016f;  // یک فریم
+}
+// forever
+else if (txt == "forever") {
+    if (block->childHeadId != -1) {
+        thread.loopStack.push_back({block->id, -1});
+        thread.currentBlockId = block->childHeadId;
+    } else {
+        thread.isWaiting = true;
+        thread.waitTimer = 0.016f;
+    }
+}
+// repeat
+else if (txt.find("repeat") != string::npos && txt.find("until") == string::npos) {
+    int count = (int)getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+    bool found = false;
+    for (auto& lp : thread.loopStack) {
+        if (lp.first == block->id) {
+            found = true;
+            lp.second++;
+            if (lp.second >= count) {
+                thread.loopStack.pop_back();
+                thread.currentBlockId = block->nextBlockId;
+            } else {
+                if (block->childHeadId != -1)
+                    thread.currentBlockId = block->childHeadId;
+            }
+            break;
         }
     }
-    else if (txt.find("repeat") != string::npos && txt.find("until") == string::npos) {
-        int count = (int)getInputValue(*block, 0);
-
-        // چک کن آیا قبلاً تو این حلقه بودیم
-        bool foundInStack = false;
+    if (!found) {
+        thread.loopStack.push_back({block->id, 0});
+        if (block->childHeadId != -1)
+            thread.currentBlockId = block->childHeadId;
+        else
+            thread.currentBlockId = block->nextBlockId;
+    }
+}
+// repeat until
+else if (txt.find("repeat until") != string::npos) {
+    bool cond = evaluateCondition(block, blocks, sprites, thread.spriteIdx);
+    if (cond) {
+        // شرط درست است → خارج شو
+        thread.currentBlockId = block->nextBlockId;
+    } else {
+        // شرط نادرست → وارد حلقه شو (اگر اولین بار است) یا ادامه بده
+        // بررسی می‌کنیم آیا قبلاً داخل حلقه بوده‌ایم؟
+        bool inLoop = false;
         for (auto& lp : thread.loopStack) {
             if (lp.first == block->id) {
-                foundInStack = true;
-                lp.second++;
-                if (lp.second >= count) {
-                    // حلقه تموم شد
-                    thread.loopStack.pop_back();
-                    thread.currentBlockId = block->nextBlockId;
-                } else {
-                    // ادامه حلقه
-                    if (block->childHeadId != -1) {
-                        thread.currentBlockId = block->childHeadId;
-                    }
-                }
+                inLoop = true;
                 break;
             }
         }
-
-        if (!foundInStack) {
-            // اولین بار وارد حلقه میشیم
-            thread.loopStack.push_back({block->id, 0});
+        if (!inLoop) {
+            thread.loopStack.push_back({block->id, -1}); // -1 یعنی تکرار تا زمانی که شرط false است
+        }
+        if (block->childHeadId != -1)
+            thread.currentBlockId = block->childHeadId;
+        else
+            thread.currentBlockId = block->nextBlockId; // اگر بدنه خالی است، عملاً بی‌نهایت
+    }
+}
+// if then
+else if (txt.find("if  then") != string::npos) {
+    bool cond = evaluateCondition(block, blocks, sprites, thread.spriteIdx);
+    if (cond) {
+        // شرط درست → وارد بدنه شو
+        if (block->childHeadId != -1) {
+            // آدرس بازگشت را ذخیره کن (بلوک بعد از if)
+            thread.ifReturnStack.push_back(block->nextBlockId);
+            thread.currentBlockId = block->childHeadId;
+        } else {
+            // بدنه خالی → برو بعدی
+            thread.currentBlockId = block->nextBlockId;
+        }
+    } else {
+        // شرط نادرست → پرش به بعد از if
+        thread.currentBlockId = block->nextBlockId;
+    }
+}
+// if else
+else if (txt.find("if  else") != string::npos) {
+    bool cond = evaluateCondition(block, blocks, sprites, thread.spriteIdx);
+    // پیدا کردن آدرس else marker و پایان
+    int elseId = block->elseBlockId;
+    if (elseId == -1) {
+        // اگر else marker پیدا نشد، مثل if ساده عمل کن
+        if (cond) {
             if (block->childHeadId != -1) {
+                thread.ifReturnStack.push_back(block->nextBlockId);
                 thread.currentBlockId = block->childHeadId;
+            } else {
+                thread.currentBlockId = block->nextBlockId;
+            }
+        } else {
+            thread.currentBlockId = block->nextBlockId;
+        }
+    } else {
+        if (cond) {
+            // وارد شاخه then شو
+            thread.ifReturnStack.push_back(block->nextBlockId);
+            thread.currentBlockId = block->childHeadId; // از ابتدای فرزندان
+        } else {
+            // پرش به بعد از else marker
+            Block* elseMarker = findBlock(blocks, elseId);
+            if (elseMarker) {
+                thread.currentBlockId = elseMarker->nextBlockId; // اولین بلوک شاخه else
+                thread.ifReturnStack.push_back(block->nextBlockId);
             } else {
                 thread.currentBlockId = block->nextBlockId;
             }
         }
     }
-    else if (txt.find("stop") != string::npos && txt.find("all") != string::npos) {
-        gIsRunning = false;
-        gActiveThreads.clear();
-        return;
+}
+// stop all
+else if (txt.find("stop all") != string::npos) {
+    gIsRunning = false;
+    gActiveThreads.clear();
+    return;
+}
+// ========== Layer Ordering ==========
+    else if (txt == "go to front layer") {
+        if (sprites.size() > 1) {
+            int currentIdx = thread.spriteIdx;
+            if (currentIdx != (int)sprites.size() - 1) {
+                Sprite temp = sprites[currentIdx];
+                sprites.erase(sprites.begin() + currentIdx);
+                sprites.push_back(temp);
+                if (gSelectedSpriteIdx == currentIdx)   // اصلاح شده
+                    gSelectedSpriteIdx = (int)sprites.size() - 1;
+                thread.spriteIdx = (int)sprites.size() - 1;
+            }
+        }
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt == "go to back layer") {
+        if (sprites.size() > 1 && thread.spriteIdx > 0) {
+            int currentIdx = thread.spriteIdx;
+            Sprite temp = sprites[currentIdx];
+            sprites.erase(sprites.begin() + currentIdx);
+            sprites.insert(sprites.begin(), temp);
+            if (gSelectedSpriteIdx == currentIdx)   // اصلاح شده
+                gSelectedSpriteIdx = 0;
+            thread.spriteIdx = 0;
+        }
+        thread.currentBlockId = block->nextBlockId;
+    }
+else if (txt.find("go forward") != string::npos && txt.find("layers") != string::npos) {
+    int steps = (int)getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+    if (steps > 0) {
+        int currentIdx = thread.spriteIdx;
+        int newIdx = min(currentIdx + steps, (int)sprites.size() - 1);
+        if (newIdx > currentIdx) {
+            Sprite temp = sprites[currentIdx];
+            sprites.erase(sprites.begin() + currentIdx);
+            sprites.insert(sprites.begin() + newIdx, temp);
+            if (gSelectedSpriteIdx == currentIdx)
+                gSelectedSpriteIdx = newIdx;
+            else if (gSelectedSpriteIdx > currentIdx && gSelectedSpriteIdx <= newIdx)
+                gSelectedSpriteIdx--;
+            thread.spriteIdx = newIdx;
+        }
+    }
+    thread.currentBlockId = block->nextBlockId;
+}
+else if (txt.find("go backward") != string::npos && txt.find("layers") != string::npos) {
+    int steps = (int)getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+    if (steps > 0) {
+        int currentIdx = thread.spriteIdx;
+        int newIdx = max(currentIdx - steps, 0);
+        if (newIdx < currentIdx) {
+            Sprite temp = sprites[currentIdx];
+            sprites.erase(sprites.begin() + currentIdx);
+            sprites.insert(sprites.begin() + newIdx, temp);
+            if (gSelectedSpriteIdx == currentIdx)
+                gSelectedSpriteIdx = newIdx;
+            else if (gSelectedSpriteIdx >= newIdx && gSelectedSpriteIdx < currentIdx)
+                gSelectedSpriteIdx++;
+            thread.spriteIdx = newIdx;
+        }
+    }
+    thread.currentBlockId = block->nextBlockId;
+}
+    else if (txt.find("go forward") != string::npos && txt.find("layers") != string::npos) {
+        int steps = (int)getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        if (steps > 0) {
+            int currentIdx = thread.spriteIdx;
+            int newIdx = min(currentIdx + steps, (int)sprites.size() - 1);
+            if (newIdx > currentIdx) {
+                Sprite temp = sprites[currentIdx];
+                sprites.erase(sprites.begin() + currentIdx);
+                sprites.insert(sprites.begin() + newIdx, temp);
+                if (gSelectedSpriteIdx == currentIdx)
+                    gSelectedSpriteIdx = newIdx;
+                else if (gSelectedSpriteIdx > currentIdx && gSelectedSpriteIdx <= newIdx)
+                    gSelectedSpriteIdx--;
+                thread.spriteIdx = newIdx;
+            }
+        }
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("go backward") != string::npos && txt.find("layers") != string::npos) {
+        int steps = (int)getEffectiveInputValue(*block, 0, blocks, sprites, thread.spriteIdx);
+        if (steps > 0) {
+            int currentIdx = thread.spriteIdx;
+            int newIdx = max(currentIdx - steps, 0);
+            if (newIdx < currentIdx) {
+                Sprite temp = sprites[currentIdx];
+                sprites.erase(sprites.begin() + currentIdx);
+                sprites.insert(sprites.begin() + newIdx, temp);
+                if (gSelectedSpriteIdx == currentIdx)
+                    gSelectedSpriteIdx = newIdx;
+                else if (gSelectedSpriteIdx >= newIdx && gSelectedSpriteIdx < currentIdx)
+                    gSelectedSpriteIdx++;
+                thread.spriteIdx = newIdx;
+            }
+        }
+        thread.currentBlockId = block->nextBlockId;
     }
 
     // ════════════════════════════════
@@ -2112,14 +2879,12 @@ else if (txt.find("next backdrop") != string::npos) {
     // ════════════════════════════════
     //  چک کردن برگشت به حلقه
     // ════════════════════════════════
-    if (thread.currentBlockId == -1 && !thread.loopStack.empty()) {
-        // به آخر زنجیره رسیدیم، برگرد به ابتدای حلقه
-        int loopBlockId = thread.loopStack.back().first;
-        thread.currentBlockId = loopBlockId;
+    if (thread.currentBlockId == -1 && !thread.ifReturnStack.empty()) {
+        // از یک if برگشته‌ایم
+        thread.currentBlockId = thread.ifReturnStack.back();
+        thread.ifReturnStack.pop_back();
     }
-
-}
-// اجرای همه thread ها
+}// اجرای همه thread ها
 static void executeAllThreads(vector<Block>& blocks, vector<Sprite>& sprites, float dt, int maxSteps = 1000000) {
     if (!gIsRunning) return;
     int steps = 0;
@@ -2140,7 +2905,6 @@ static void executeAllThreads(vector<Block>& blocks, vector<Sprite>& sprites, fl
         }
     }
 }
-
 
 // ════════════════════════════════════════════
 //  MAIN
@@ -2289,6 +3053,11 @@ int main(int argc, char* argv[]) {
                 if (e.key.keysym.sym == SDLK_F9) {
                     gDebugMode = !gDebugMode;
                     LogEvent("INFO", string("Debug mode ") + (gDebugMode ? "enabled" : "disabled"));
+                    for (int handlerId : gSpaceHandlers) {
+                        for (int i = 0; i < (int)sprites.size(); i++) {
+                            gActiveThreads.push_back(ScriptThread(handlerId, i));
+                        }
+                    }
                 }
                 if (e.key.keysym.sym == SDLK_F10) {
                     if (gDebugMode) {
@@ -2439,7 +3208,44 @@ int main(int argc, char* argv[]) {
     }
     continue;
 }
+                // ─── Extension Panel Clicks ───
+                if (gExtensionPanelOpen) {
+                    int panelW = 400;
+                    int panelH = 250;
+                    int panelX = (L.winW - panelW) / 2;
+                    int panelY = (L.winH - panelH) / 2;
 
+                    // دکمه بستن (X)
+                    int closeSz = 24;
+                    int closeBtnX = panelX + panelW - closeSz - 10;
+                    int closeBtnY = panelY + 10;
+                    if (mx >= closeBtnX && mx <= closeBtnX + closeSz &&
+                        my >= closeBtnY && my <= closeBtnY + closeSz) {
+                        gExtensionPanelOpen = false;
+                        continue;
+                        }
+
+                    // دکمه Pen
+                    int penBtnX = panelX + 50;
+                    int penBtnY = panelY + 80;
+                    int penBtnW = panelW - 100;
+                    int penBtnH = 50;
+                    if (mx >= penBtnX && mx <= penBtnX + penBtnW &&
+                        my >= penBtnY && my <= penBtnY + penBtnH) {
+                        gPenExtensionEnabled = true;   // فعال کردن افزونه Pen
+                        vector<Block> kept;
+                        for (auto& b : blocks) if (!b.inPalette) kept.push_back(b);
+                        blocks = buildPaletteBlocks();
+                        for (auto& b : kept) blocks.push_back(b);
+                        gExtensionPanelOpen = false;    // بستن پنل
+                        continue;
+                        }
+                    // اگر کلیک خارج از پنل بود، نادیده بگیریم (پنل باز بماند)
+                    if (mx < panelX || mx > panelX + panelW || my < panelY || my > panelY + panelH) {
+                        continue;
+                    }
+                    continue; // اگر کلیک روی خود پنل بود و پردازش شد، ادامه نده
+                }
                 // Sprite info panel fields and costume edit mode checks...
                 {
                     int spriteAreaY = L.TOOLBAR_HEIGHT + L.STAGE_HEIGHT + 5;
@@ -2456,11 +3262,11 @@ int main(int argc, char* argv[]) {
                     int frontBtnX = infoX + fieldW2 * 2 - layerBtnW - 5;
                     if (mx >= frontBtnX && mx <= frontBtnX + layerBtnW &&
                         my >= layerBtnY && my <= layerBtnY + layerBtnH) {
-                        if (selectedSpriteIdx < (int)sprites.size() && sprites.size() > 1) {
+                        if (gSelectedSpriteIdx < (int)sprites.size() && sprites.size() > 1) {
 
                             std::swap(sprites[selectedSpriteIdx], sprites.back());
                             markProjectAsModified();
-                            selectedSpriteIdx = (int)sprites.size() - 1;
+                            gSelectedSpriteIdx = (int)sprites.size() - 1;
                         }
                         continue;
                     }
@@ -2481,9 +3287,9 @@ int main(int argc, char* argv[]) {
                     int backBtnX = frontBtnX - layerBtnW - 5;
                     if (mx >= backBtnX && mx <= backBtnX + layerBtnW &&
                         my >= layerBtnY && my <= layerBtnY + layerBtnH) {
-                        if (selectedSpriteIdx < (int)sprites.size() && sprites.size() > 1) {
+                        if (gSelectedSpriteIdx < (int)sprites.size() && sprites.size() > 1) {
                             std::swap(sprites[selectedSpriteIdx], sprites.front());
-                            selectedSpriteIdx = 0;
+                            gSelectedSpriteIdx = 0;
                         }
                         continue;
                     }
@@ -2568,7 +3374,7 @@ int main(int argc, char* argv[]) {
                     if (mx >= uploadBtnX && mx <= uploadBtnX + uploadBtnW &&
                         my >= uploadBtnY && my <= uploadBtnY + uploadBtnH) {
 
-                        if(selectedSpriteIdx < (int)sprites.size()) {
+                        if(gSelectedSpriteIdx < (int)sprites.size()) {
                             const char* filters[3] = { "*.png", "*.jpg", "*.jpeg" };
                             const char* fileName = tinyfd_openFileDialog(
                                 "Select Image", "",
@@ -2623,7 +3429,7 @@ int main(int argc, char* argv[]) {
                             SDL_SetRenderDrawColor(rnd, 255, 255, 255, 255);
                             SDL_RenderClear(rnd);
 
-                            if(selectedSpriteIdx < (int)sprites.size() &&
+                            if(gSelectedSpriteIdx < (int)sprites.size() &&
                                sprites[selectedSpriteIdx].uploadedTexture) {
                                 SDL_RenderCopy(rnd, sprites[selectedSpriteIdx].uploadedTexture, nullptr, nullptr);
                             }
@@ -2707,7 +3513,13 @@ int main(int argc, char* argv[]) {
 
 
                 // ... (بقیه کد toolbar) ...
-
+                // دکمه Extensions در تولبار
+                int extBtnX = 10;
+                int extBtnW = (int)(80 * L.s);
+                if (my < L.TOOLBAR_HEIGHT && mx >= extBtnX && mx <= extBtnX + extBtnW) {
+                    gExtensionPanelOpen = !gExtensionPanelOpen;
+                    continue;
+                }
                 // دکمه File
                 int fileButtonX = 100;
                 int fileButtonY = 5;
@@ -3088,7 +3900,7 @@ if (gSaveDialogOpen) {
         // برای جلوگیری از کلیک روی بلوک‌ها و غیره، اینجا continue می‌کنیم
         continue;
     }
-    continue; // اگر کلیک روی خود دیالوگ بود و پردازش شد، ادامه نده
+    continue;
 }
 
 // ── LOAD PROJECT DIALOG CLICKS ──
@@ -3160,7 +3972,7 @@ if (gLoadDialogOpen) {
                             if(!b.inPalette||b.cat!=selectedCategory) continue;
                             float drawX=(float)palX+5,drawY=yy;
                             if(mx>=drawX&&mx<=drawX+b.w&&my>=drawY&&my<=drawY+b.h&&my>L.TOOLBAR_HEIGHT){
-                                Block nb=cloneBlock(b,(float)mx-b.w/2,(float)my-b.h/2);
+                                Block nb = cloneBlock(b, (float)mx - b.w/2, (float)my - b.h/2, blocks);
                                 blocks.push_back(nb);
                                 markProjectAsModified();
                                 dragBlockId=nb.id;dragOffX=b.w/2;dragOffY=b.h/2;break;
@@ -3217,6 +4029,7 @@ if (gLoadDialogOpen) {
                 if(dragBlockId>=0){
                     Block* db=findBlock(blocks,dragBlockId);
                     if(db){
+                        drawBlock(rnd, *db, blocks, true);
                         if(db->x<L.PALETTE_WIDTH) blocks.erase(remove_if(blocks.begin(),blocks.end(),[&](const Block& b){return b.id==dragBlockId;}),blocks.end());
                         else{trySnapBlocks(blocks,dragBlockId);for(auto& b:blocks){if(!b.inPalette&&b.shape==BlockShape::C_BLOCK){b.h=calcCBlockHeight(blocks,b);updateCBlockChildren(blocks,b);}}}
                     }
@@ -3621,27 +4434,68 @@ executeStep(thread, blocks, sprites, dt, rnd);
             fillRoundedRect(rnd, editorX+230, toolbarY, 60, 30, 4, 100,100,100,255);
             drawTextTTF(rnd, editorX+240, toolbarY+5, "Exit", 255,255,255,255);
         }
+ // ── رسم بلوک‌های فضای کار با هایلایت ──
+{
+    // ساخت مجموعه‌ای از شناسه‌ی بلوک‌های در حال اجرا
+    unordered_set<int> executingIds;
+    for (auto& th : gActiveThreads) {
+        if (th.currentBlockId != -1)
+            executingIds.insert(th.currentBlockId);
+    }
 
-        // ── Draw workspace blocks ──
-        {
-            for(auto& b:blocks){if(b.inPalette||b.id==dragBlockId) continue; drawBlock(rnd,b,blocks);}
-            for(auto& b:blocks){if(b.inPalette) continue; for(auto& sl:b.opSlots){if(sl.embeddedBlockId>=0){Block* emb=findBlock(blocks,sl.embeddedBlockId);if(emb)drawBlock(rnd,*emb,blocks);}}}
-            if(dragBlockId>=0){
-                Block* db=findBlock(blocks,dragBlockId);
-                if(db){
-                    drawBlock(rnd,*db,blocks,true);
-                    for(auto& other:blocks){
-                        if(other.id==dragBlockId||other.inPalette||other.nextBlockId>=0) continue;
-                        if(other.shape==BlockShape::CAP||other.shape==BlockShape::REPORTER||other.shape==BlockShape::BOOLEAN) continue;
-                        float ox=other.x,oy=other.y+other.h;
-                        if(abs(db->x-ox)<L.SNAP_DISTANCE&&abs(db->y-oy)<L.SNAP_DISTANCE){SDL_SetRenderDrawColor(rnd,50,150,255,150);SDL_Rect prev={(int)ox,(int)oy-2,(int)db->w,4};SDL_RenderFillRect(rnd,&prev);}
-                        if(other.shape==BlockShape::C_BLOCK){float indent=20*L.s,barH=L.CBLOCK_BAR_H,mouthX=other.x+indent,mouthY=other.y+barH;if(abs(db->x-mouthX)<L.SNAP_DISTANCE&&abs(db->y-mouthY)<L.SNAP_DISTANCE){SDL_SetRenderDrawColor(rnd,255,200,50,150);SDL_Rect prev={(int)mouthX,(int)mouthY-2,(int)(other.w-indent),4};SDL_RenderFillRect(rnd,&prev);}}
+    // رسم بلوک‌های معمولی (غیر پالت و غیر درگ)
+    for (auto& b : blocks) {
+        if (b.inPalette || b.id == dragBlockId) continue;
+        bool highlight = (executingIds.find(b.id) != executingIds.end());
+        drawBlock(rnd, b, blocks, highlight);
+    }
+
+    // رسم بلوک‌های embedded (که درون slotها قرار گرفته‌اند)
+    for (auto& b : blocks) {
+        if (b.inPalette) continue;
+        for (auto& sl : b.opSlots) {
+            if (sl.embeddedBlockId >= 0) {
+                Block* emb = findBlock(blocks, sl.embeddedBlockId);
+                if (emb) {
+                    bool highlight = (executingIds.find(emb->id) != executingIds.end());
+                    drawBlock(rnd, *emb, blocks, highlight);
+                }
+            }
+        }
+    }
+
+    // رسم بلوک در حال کشیده شدن (اگر وجود داشته باشد)
+    if (dragBlockId >= 0) {
+        Block* db = findBlock(blocks, dragBlockId);
+        if (db) {
+            drawBlock(rnd, *db, blocks, true);
+            // خطوط راهنمای چسبندگی
+            for (auto& other : blocks) {
+                if (other.id == dragBlockId || other.inPalette || other.nextBlockId >= 0) continue;
+                if (other.shape == BlockShape::CAP || other.shape == BlockShape::REPORTER || other.shape == BlockShape::BOOLEAN) continue;
+                float ox = other.x, oy = other.y + other.h;
+                if (abs(db->x - ox) < L.SNAP_DISTANCE && abs(db->y - oy) < L.SNAP_DISTANCE) {
+                    SDL_SetRenderDrawColor(rnd, 50, 150, 255, 150);
+                    SDL_Rect prev = {(int)ox, (int)oy - 2, (int)db->w, 4};
+                    SDL_RenderFillRect(rnd, &prev);
+                }
+                if (other.shape == BlockShape::C_BLOCK) {
+                    float indent = 20 * L.s, barH = L.CBLOCK_BAR_H;
+                    float mouthX = other.x + indent, mouthY = other.y + barH;
+                    if (abs(db->x - mouthX) < L.SNAP_DISTANCE && abs(db->y - mouthY) < L.SNAP_DISTANCE) {
+                        SDL_SetRenderDrawColor(rnd, 255, 200, 50, 150);
+                        SDL_Rect prev = {(int)mouthX, (int)mouthY - 2, (int)(other.w - indent), 4};
+                        SDL_RenderFillRect(rnd, &prev);
                     }
                 }
             }
         }
+    }
+}
+
         renderBackdropPanel(rnd);
         // رسم منوی File اگر باز باشد
+        renderExtensionPanel(rnd);
         if(gFileMenuOpen) {
             int menuX = 10;
             int menuY = L.TOOLBAR_HEIGHT + 5;
@@ -3843,12 +4697,12 @@ if (gLoadDialogOpen) {
         }
         // نمایش وضعیت اسپرایت در حالت گام‌به‌گام
         // نمایش وضعیت اسپرایت در حالت گام‌به‌گام
-        if (gDebugMode && gStepMode && selectedSpriteIdx >= 0 && selectedSpriteIdx < (int)sprites.size()) {
+        if (gDebugMode && gStepMode && gSelectedSpriteIdx >= 0 && gSelectedSpriteIdx < (int)sprites.size()) {
             Sprite& sp = sprites[selectedSpriteIdx];
             // پیدا کردن اولین ترد فعال مربوط به این اسپرایت
             int loopCounter = -1;
             for (const auto& thread : gActiveThreads) {
-                if (thread.spriteIdx == selectedSpriteIdx && !thread.loopStack.empty()) {
+                if (thread.spriteIdx == gSelectedSpriteIdx && !thread.loopStack.empty()) {
                     // اگر در حلقه است، شمارنده آخرین حلقه را نشان بده
                     loopCounter = thread.loopStack.back().second;
                     break;
