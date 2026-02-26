@@ -1,4 +1,4 @@
-#include <SDL2/SDL.h>
+یک بار دیگر به کد من نگاه کن، مطمئن شو که چیز دیگری جا نیفتاده باشد #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <bits/stdc++.h>
 #include <SDL_image.h>
@@ -478,14 +478,14 @@ struct Sprite {
     bool visible;
     bool selected;
     SDL_Color color;
-
+    vector<SDL_Texture*> costumes;
+    int currentCostume;
     string sayText;
     float sayTimer;
     string thinkText;
     float thinkTimer;
     float ghostEffect;
     float colorEffect;
-    int currentCostume;
     SDL_Texture* uploadedTexture;
     // ══ Pen State ══
     bool penDown = false;
@@ -514,6 +514,8 @@ static Sprite createDefaultSprite(const char* name, float x, float y, SDL_Color 
     sp.ghostEffect = 0;
     sp.colorEffect = 0;
     sp.currentCostume = 0;
+    sp.currentCostume = 0;
+    sp.costumes.clear();
     sp.penDown = false;
     sp.penSize = 2.0f;
     sp.penR = 0; sp.penG = 0; sp.penB = 255; sp.penA = 255;
@@ -542,6 +544,7 @@ struct OperatorSlot {
 
 struct Block {
     int id;
+    int line;
     Category cat;
     BlockShape shape;
     string text;
@@ -576,11 +579,18 @@ static float safeDivide(float numerator, float denominator) {
     }
     return numerator / denominator;
 }
+static float safeSqrt(float value) {
+    if (value < 0) {
+        LogEvent("ERROR", "Square root of negative number attempted!");
+        return 0;
+    }
+    return sqrt(value);
+}
 static vector<ScriptThread> gActiveThreads;  // لیست thread های فعال
 
 
 static int gNextBlockId = 1000;
-
+static int gNextLineNumber = 1;
 // ════════════════════════════════════════════
 //  Global state
 // ════════════════════════════════════════════
@@ -639,6 +649,7 @@ static Block makeBlock(int id, Category cat, BlockShape shape, const string& tex
 {
     Block b;
     b.id = id; b.cat = cat; b.shape = shape; b.text = text;
+    b.line = (inPalette ? 0 : gNextLineNumber++);
     b.x = x; b.y = y;
     b.w = L.BLOCK_WIDTH;
     b.h = (shape == BlockShape::C_BLOCK) ? L.CBLOCK_MIN_H : L.BLOCK_HEIGHT;
@@ -679,6 +690,8 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "change x by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "change y by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "point dir ", 0,0,true, {makeInput(bw*0.55f,bh*0.15f,fieldW,fieldH,"90")}, {makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "go to random", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::COMMAND, "go to mouse", 0,0,true, {}, {}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "x position", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "y position", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::MOTION, BlockShape::REPORTER, "direction", 0,0,true,{},{}));
@@ -692,9 +705,15 @@ static vector<Block> buildPaletteBlocks() {
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "set size to %", 0,0,true, {makeInput(bw*0.55f,bh*0.15f,fieldW,fieldH,"100")}, {makeOpSlot(bw*0.55f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "change size by ", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"10")}, {makeOpSlot(bw*0.6f,bh*0.15f,slotW,fieldH)}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "next costume", 0,0,true,{},{}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "switch costume to", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"1")}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "switch backdrop to", 0,0,true, {makeInput(bw*0.6f,bh*0.15f,fieldW,fieldH,"default")}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "next backdrop", 0,0,true, {}, {}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "costume #", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "size", 0,0,true,{},{}));
-
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::REPORTER, "backdrop name", 0,0,true, {}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "change color effect by", 0,0,true, {makeInput(bw*0.7f,bh*0.15f,fieldW,fieldH,"25")}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "set color effect to", 0,0,true, {makeInput(bw*0.7f,bh*0.15f,fieldW,fieldH,"0")}, {}));
+    blocks.push_back(makeBlock(id++, Category::LOOKS, BlockShape::COMMAND, "clear graphic effects", 0,0,true, {}, {}));
     // SOUND
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "play sound", 0,0,true,{},{}));
     blocks.push_back(makeBlock(id++, Category::SOUND, BlockShape::COMMAND, "stop sounds", 0,0,true,{},{}));
@@ -811,6 +830,7 @@ static void updateCBlockChildren(vector<Block>& blocks, Block& cb) {
 static Block cloneBlock(const Block& src, float x, float y) {
     Block b = src;
     b.id = gNextBlockId++;
+    b.line = gNextLineNumber++;
     b.x = x; b.y = y;
     b.inPalette = false;
     b.nextBlockId = -1; b.parentBlockId = -1; b.childHeadId = -1;
@@ -1618,7 +1638,7 @@ static void startGreenFlag(vector<Block>& blocks, vector<Sprite>& sprites) {
     gActiveThreads.clear();
     gIsRunning = true;
     gTimer = 0;
-
+    gCycleCount = 0;
     // پیدا کردن همه بلوک‌های "when flag clicked"
     for (auto& block : blocks) {
         if (block.inPalette) continue;  // بلوک‌های پالت رو نادیده بگیر
@@ -1705,7 +1725,7 @@ static void clampSprite(Sprite& sp) {
 }
 static void executeStep(ScriptThread& thread, vector<Block>& blocks,
                         vector<Sprite>& sprites, float dt, SDL_Renderer* rnd = nullptr) {
-
+    gCycleCount++;
     // اگه thread تموم شده
     if (thread.currentBlockId == -1) return;
 
@@ -1751,55 +1771,103 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
         penDrawFromSprite(sp, oldX, oldY);
         penDrawFromSprite(sp, oldX, oldY);
         penDrawFromSprite(sp, oldX, oldY);
+        LogEvent("INFO", "MOVE: steps=" + to_string(steps) + " from (" + to_string(oldX) + "," + to_string(oldY) + ") to (" + to_string(sp.x) + "," + to_string(sp.y) + ")");
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("turn") != string::npos && txt.find("R") != string::npos) {
+        float oldDir = sp.direction;
         sp.direction += getInputValue(*block, 0);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] TURN RIGHT: by " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldDir) + " to " + to_string(sp.direction));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("turn") != string::npos && txt.find("L") != string::npos) {
+        float oldDir = sp.direction;
         sp.direction -= getInputValue(*block, 0);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] TURN LEFT: by " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldDir) + " to " + to_string(sp.direction));
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("go to random") != string::npos) {
+        float oldX = sp.x, oldY = sp.y;
+        float halfW = L.STAGE_WIDTH / 2.0f;
+        float halfH = L.STAGE_HEIGHT / 2.0f;
+        // تولید مختصات تصادفی بین -halfW تا halfW و -halfH تا halfH
+        sp.x = (float)(rand() % (int)(2 * halfW * 100)) / 100.0f - halfW;
+        sp.y = (float)(rand() % (int)(2 * halfH * 100)) / 100.0f - halfH;
+        clampSprite(sp);
+        penDrawFromSprite(sp, oldX, oldY);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] GO TO RANDOM: from (" + to_string(oldX) + "," + to_string(oldY) + ") to (" + to_string(sp.x) + "," + to_string(sp.y) + ")");
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("go to mouse") != string::npos) {
+        float oldX = sp.x, oldY = sp.y;
+        int mx, my;
+        SDL_GetMouseState(&mx, &my);
+        int stageX = L.PALETTE_WIDTH;
+        int stageY = L.TOOLBAR_HEIGHT;
+        int stageW = L.STAGE_WIDTH;
+        int stageH = L.STAGE_HEIGHT;
+        int centerX = stageX + stageW / 2;
+        int centerY = stageY + stageH / 2;
+        sp.x = (float)(mx - centerX);
+        sp.y = (float)(centerY - my); // تبدیل مختصات صفحه به مختصات صحنه
+        clampSprite(sp);
+        penDrawFromSprite(sp, oldX, oldY);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] GO TO MOUSE: from (" + to_string(oldX) + "," + to_string(oldY) + ") to (" + to_string(sp.x) + "," + to_string(sp.y) + ")");
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("go to x") != string::npos) {
         float oldX = sp.x, oldY = sp.y;
         sp.x = getInputValue(*block, 0);
         sp.y = getInputValue(*block, 1);
+        clampSprite(sp);
         penDrawFromSprite(sp, oldX, oldY);
+        LogEvent("INFO", "GO TO: (" + to_string(sp.x) + "," + to_string(sp.y) + ") from (" + to_string(oldX) + "," + to_string(oldY) + ")");
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("set x to") != string::npos) {
-        float oldX = sp.x, oldY = sp.y;
+        float oldX = sp.x;
         sp.x = getInputValue(*block, 0);
-        penDrawFromSprite(sp, oldX, oldY);
+        clampSprite(sp);
+        penDrawFromSprite(sp, oldX, sp.y);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET X: to " + to_string(sp.x) + " from " + to_string(oldX));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("set y to") != string::npos) {
-        float oldX = sp.x, oldY = sp.y;
+        float oldY = sp.y;
         sp.y = getInputValue(*block, 0);
-        penDrawFromSprite(sp, oldX, oldY);
+        clampSprite(sp);
+        penDrawFromSprite(sp, sp.x, oldY);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET Y: to " + to_string(sp.y) + " from " + to_string(oldY));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("change x by") != string::npos) {
-        float oldX = sp.x, oldY = sp.y;
+        float oldX = sp.x;
         sp.x += getInputValue(*block, 0);
-        penDrawFromSprite(sp, oldX, oldY);
+        clampSprite(sp);
+        penDrawFromSprite(sp, oldX, sp.y);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE X BY: " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldX) + " to " + to_string(sp.x));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("change y by") != string::npos) {
-        float oldX = sp.x, oldY = sp.y;
+        float oldY = sp.y;
         sp.y += getInputValue(*block, 0);
-        penDrawFromSprite(sp, oldX, oldY);
+        clampSprite(sp);
+        penDrawFromSprite(sp, sp.x, oldY);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE Y BY: " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldY) + " to " + to_string(sp.y));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("point dir") != string::npos) {
+        float oldDir = sp.direction;
         sp.direction = getInputValue(*block, 0);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] POINT DIR: to " + to_string(sp.direction) + " from " + to_string(oldDir));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("glide") != string::npos) {
-        // glide رو به صورت ساده پیاده می‌کنیم (بدون انیمیشن)
+        float oldX = sp.x, oldY = sp.y;
         sp.x = getInputValue(*block, 1);
         sp.y = getInputValue(*block, 2);
+        clampSprite(sp);
+        LogEvent("INFO", "GLIDE: to (" + to_string(sp.x) + "," + to_string(sp.y) + ") from (" + to_string(oldX) + "," + to_string(oldY) + ") in " + to_string(getInputValue(*block, 0)) + " secs");
         thread.isWaiting = true;
         thread.waitTimer = getInputValue(*block, 0);
     }
@@ -1843,45 +1911,138 @@ static void executeStep(ScriptThread& thread, vector<Block>& blocks,
     // ════════════════════════════════
     //  LOOKS BLOCKS
     // ════════════════════════════════
+    else if (txt.find("change color effect by") != string::npos) {
+        float oldEffect = sp.colorEffect;
+        sp.colorEffect += getInputValue(*block, 0);
+        // محدود کردن به بازه 0 تا 100 (یا هر بازه دلخواه)
+        if (sp.colorEffect < 0) sp.colorEffect = 0;
+        if (sp.colorEffect > 100) sp.colorEffect = 100;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE COLOR EFFECT by " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldEffect) + " to " + to_string(sp.colorEffect));
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("set color effect to") != string::npos) {
+        float oldEffect = sp.colorEffect;
+        sp.colorEffect = getInputValue(*block, 0);
+        if (sp.colorEffect < 0) sp.colorEffect = 0;
+        if (sp.colorEffect > 100) sp.colorEffect = 100;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET COLOR EFFECT to " + to_string(sp.colorEffect) + " from " + to_string(oldEffect));
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("clear graphic effects") != string::npos) {
+        sp.ghostEffect = 0;
+        sp.colorEffect = 0;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CLEAR GRAPHIC EFFECTS");
+        thread.currentBlockId = block->nextBlockId;
+    }
+    else if (txt.find("say") != string::npos && txt.find("sec") == string::npos) {
+        projectModified = true;
+        sp.sayText = getInputString(*block, 0);
+        sp.sayTimer = -1;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SAY: " + sp.sayText);
+        thread.currentBlockId = block->nextBlockId;
+    }
     else if (txt.find("say") != string::npos && txt.find("sec") != string::npos) {
         sp.sayText = getInputString(*block, 0);
         sp.sayTimer = getInputValue(*block, 1);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SAY FOR: " + sp.sayText + " for " + to_string(sp.sayTimer) + " secs");
         thread.isWaiting = true;
         thread.waitTimer = sp.sayTimer;
-    }
-    else if (txt.find("say") != string::npos) {
-        projectModified = true;
-        sp.sayText = getInputString(*block, 0);
-        sp.sayTimer = -1;  // بدون محدودیت زمانی
-        thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("think") != string::npos && txt.find("sec") != string::npos) {
         sp.thinkText = getInputString(*block, 0);
         sp.thinkTimer = getInputValue(*block, 1);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] THINK FOR: " + sp.thinkText + " for " + to_string(sp.thinkTimer) + " secs");
         thread.isWaiting = true;
         thread.waitTimer = sp.thinkTimer;
     }
     else if (txt.find("think") != string::npos) {
         sp.thinkText = getInputString(*block, 0);
         sp.thinkTimer = -1;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] THINK: " + sp.thinkText);
         thread.currentBlockId = block->nextBlockId;
     }
+    else if (txt.find("switch costume to") != string::npos) {
+    string input = getInputString(*block, 0);
+    int newIndex = -1;
+    try {
+        newIndex = stoi(input) - 1; // شماره لباس از 1 شروع می‌شود
+    } catch (...) {
+        // در صورت نیاز می‌توانید بر اساس نام جستجو کنید
+    }
+    if (newIndex >= 0 && newIndex < (int)sp.costumes.size()) {
+        sp.currentCostume = newIndex;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SWITCH COSTUME to " + input);
+    } else {
+        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Costume not found: " + input);
+    }
+    thread.currentBlockId = block->nextBlockId;
+}
+else if (txt.find("next costume") != string::npos) {
+    if (!sp.costumes.empty()) {
+        sp.currentCostume = (sp.currentCostume + 1) % (int)sp.costumes.size();
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] NEXT COSTUME to index " + to_string(sp.currentCostume+1));
+    } else {
+        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] No costumes");
+    }
+    thread.currentBlockId = block->nextBlockId;
+}
+else if (txt.find("switch backdrop to") != string::npos) {
+    string name = getInputString(*block, 0);
+    bool found = false;
+    for (int i = 0; i < gBackdropLibraryCount; i++) {
+        if (name == gBackdropItems[i].name) {
+            gCurrentBackdropName = name;
+            loadBackdrop(gMainRenderer, gBackdropItems[i].path);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Backdrop not found: " + name);
+    }
+    thread.currentBlockId = block->nextBlockId;
+}
+else if (txt.find("next backdrop") != string::npos) {
+    int currentIdx = -1;
+    for (int i = 0; i < gBackdropLibraryCount; i++) {
+        if (gCurrentBackdropName == gBackdropItems[i].name) {
+            currentIdx = i;
+            break;
+        }
+    }
+    if (currentIdx >= 0) {
+        int nextIdx = (currentIdx + 1) % gBackdropLibraryCount;
+        gCurrentBackdropName = gBackdropItems[nextIdx].name;
+        loadBackdrop(gMainRenderer, gBackdropItems[nextIdx].path);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] NEXT BACKDROP to " + gCurrentBackdropName);
+    } else {
+        LogEvent("WARNING", "[Line:" + to_string(block->line) + "] Cannot cycle custom backdrop");
+    }
+    thread.currentBlockId = block->nextBlockId;
+}
     else if (txt == "show") {
         sp.visible = true;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SHOW");
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt == "hide") {
         sp.visible = false;
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] HIDE");
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("set size") != string::npos) {
+        float oldSize = sp.size;
         sp.size = getInputValue(*block, 0);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] SET SIZE: to " + to_string(sp.size) + " from " + to_string(oldSize));
         thread.currentBlockId = block->nextBlockId;
     }
     else if (txt.find("change size") != string::npos) {
+        float oldSize = sp.size;
         sp.size += getInputValue(*block, 0);
+        LogEvent("INFO", "[Line:" + to_string(block->line) + "] CHANGE SIZE BY: " + to_string(getInputValue(*block, 0)) + " from " + to_string(oldSize) + " to " + to_string(sp.size));
         thread.currentBlockId = block->nextBlockId;
     }
+
 
     // ════════════════════════════════
     //  CONTROL BLOCKS
@@ -2137,11 +2298,8 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 if (e.key.keysym.sym == SDLK_SPACE) {
-                    if (gIsRunning && !(gDebugMode && gStepMode && gStepWait)) {
-
-                        // اجرای یک گام
+                    if (gDebugMode && gStepMode && gStepWait) {
                         executeAllThreads(blocks, sprites, dt, 1);
-                        // بعد از اجرا همچنان در حالت انتظار می‌مانیم
                     }
                 }
                 if (e.key.keysym.sym == SDLK_F1) {
@@ -2407,8 +2565,8 @@ int main(int argc, char* argv[]) {
                     int uploadBtnX = infoX + fieldW2 * 2 - uploadBtnW - 10;
                     int uploadBtnY = infoY;
 
-                    if(mx >= uploadBtnX && mx <= uploadBtnX + uploadBtnW &&
-                       my >= uploadBtnY && my <= uploadBtnY + uploadBtnH) {
+                    if (mx >= uploadBtnX && mx <= uploadBtnX + uploadBtnW &&
+                        my >= uploadBtnY && my <= uploadBtnY + uploadBtnH) {
 
                         if(selectedSpriteIdx < (int)sprites.size()) {
                             const char* filters[3] = { "*.png", "*.jpg", "*.jpeg" };
@@ -2422,11 +2580,13 @@ int main(int argc, char* argv[]) {
                             if(fileName != NULL) {
                                 SDL_Surface* surf = IMG_Load(fileName);
                                 if(surf) {
-                                    if(sprites[selectedSpriteIdx].uploadedTexture)
-                                        SDL_DestroyTexture(sprites[selectedSpriteIdx].uploadedTexture);
-                                    sprites[selectedSpriteIdx].uploadedTexture = SDL_CreateTextureFromSurface(rnd, surf);
-                                    sprites[selectedSpriteIdx].uploadedTexturePath = fileName;
-                                    markProjectAsModified();
+                                    SDL_Texture* newTex = SDL_CreateTextureFromSurface(rnd, surf);
+                                    if (newTex) {
+                                        // اضافه کردن به لیست لباس‌ها
+                                        sprites[selectedSpriteIdx].costumes.push_back(newTex);
+                                        sprites[selectedSpriteIdx].currentCostume = sprites[selectedSpriteIdx].costumes.size() - 1;
+                                        markProjectAsModified();
+                                    }
                                     SDL_FreeSurface(surf);
                                     cout << "Image loaded: " << fileName << endl;
                                 } else {
@@ -2434,7 +2594,7 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                         }
-                    }
+                        }
                 }
 
                 // Edit button
@@ -3226,13 +3386,14 @@ executeStep(thread, blocks, sprites, dt, rnd);
 
                 drawCol.a = (Uint8)(255 * (1.0f - sp.ghostEffect / 100.0f));
 
-                if (sp.uploadedTexture) {
+                if (!sp.costumes.empty() && sp.currentCostume >= 0 && sp.currentCostume < (int)sp.costumes.size() && sp.costumes[sp.currentCostume]) {
+                    SDL_Texture* tex = sp.costumes[sp.currentCostume];
                     SDL_Rect srcRect = {0,0,0,0};
-                    SDL_QueryTexture(sp.uploadedTexture, NULL, NULL, &srcRect.w, &srcRect.h);
+                    SDL_QueryTexture(tex, NULL, NULL, &srcRect.w, &srcRect.h);
                     SDL_Rect dstRect = {sx-sz/2, sy-sz/2, sz, sz};
-                    SDL_RenderCopy(rnd, sp.uploadedTexture, &srcRect, &dstRect);
+                    SDL_RenderCopy(rnd, tex, &srcRect, &dstRect);
                 } else {
-                    drawCatSprite(rnd,sx,sy,sz,drawCol);
+                    drawCatSprite(rnd, sx, sy, sz, drawCol);
                 }
                 float angle=(sp.direction-90)*M_PI/180.0f;
                 int arrowX=sx+(int)((sz*0.8f)*cos(angle));
@@ -3679,6 +3840,40 @@ if (gLoadDialogOpen) {
             y += 25;
             string stepStatus = "Step mode: " + string(gStepMode ? "ON" : "OFF");
             drawTextTTF(rnd, helpX+10, y, stepStatus.c_str(), 200, 200, 200, 255);
+        }
+        // نمایش وضعیت اسپرایت در حالت گام‌به‌گام
+        // نمایش وضعیت اسپرایت در حالت گام‌به‌گام
+        if (gDebugMode && gStepMode && selectedSpriteIdx >= 0 && selectedSpriteIdx < (int)sprites.size()) {
+            Sprite& sp = sprites[selectedSpriteIdx];
+            // پیدا کردن اولین ترد فعال مربوط به این اسپرایت
+            int loopCounter = -1;
+            for (const auto& thread : gActiveThreads) {
+                if (thread.spriteIdx == selectedSpriteIdx && !thread.loopStack.empty()) {
+                    // اگر در حلقه است، شمارنده آخرین حلقه را نشان بده
+                    loopCounter = thread.loopStack.back().second;
+                    break;
+                }
+            }
+
+            int panelX = 20, panelY = L.TOOLBAR_HEIGHT + 20;
+            int panelW = 220, panelH = 150;  // کمی بزرگتر برای جا دادن اطلاعات حلقه
+            // پس‌زمینه نیمه‌شفاف
+            fillRoundedRect(rnd, panelX, panelY, panelW, panelH, 8, 0, 0, 0, 180);
+            drawRoundedRectOutline(rnd, panelX, panelY, panelW, panelH, 8, 255, 255, 255, 255);
+            int y = panelY + 10;
+            drawTextTTF(rnd, panelX + 10, y, ("Sprite: " + sp.name).c_str(), 255, 255, 255, 255);
+            y += 20;
+            drawTextTTF(rnd, panelX + 10, y, ("X: " + to_string(sp.x)).c_str(), 200, 200, 200, 255);
+            y += 18;
+            drawTextTTF(rnd, panelX + 10, y, ("Y: " + to_string(sp.y)).c_str(), 200, 200, 200, 255);
+            y += 18;
+            drawTextTTF(rnd, panelX + 10, y, ("Dir: " + to_string(sp.direction)).c_str(), 200, 200, 200, 255);
+            y += 18;
+            drawTextTTF(rnd, panelX + 10, y, ("Size: " + to_string(sp.size)).c_str(), 200, 200, 200, 255);
+            if (loopCounter >= 0) {
+                y += 18;
+                drawTextTTF(rnd, panelX + 10, y, ("Loop counter: " + to_string(loopCounter)).c_str(), 200, 200, 100, 255);
+            }
         }
         // نمایش نام پروژه فعلی
         string projectDisplayName = currentProject.projectName;
